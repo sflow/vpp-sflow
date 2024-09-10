@@ -22,11 +22,12 @@
 #include <sflow/sflow.h>
 
 // Using cpp flags to try different approaches:
-#define SFLOW_SEND_FROM_WORKER 1
+//#define SFLOW_SEND_FROM_WORKER 1
 //#define SFLOW_SEND_VIA_MAIN 1
+#define SFLOW_SEND_FIFO 1
 
 // different logging options
-#define SFLOW_LOG_CYCLES 1
+//#define SFLOW_LOG_CYCLES 1
 //#define SFLOW_LOG_SAMPLES 1  // will add to cycles
 
 typedef struct 
@@ -273,6 +274,11 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
 #ifdef SFLOW_SEND_FROM_WORKER
       sflow_send_sample_from_worker((u8 *)&sample);
 #endif
+
+#ifdef SFLOW_SEND_FIFO
+      svm_fifo_enqueue(sfwk->fifo, sizeof(sample), (u8 *)&sample);
+#endif
+
       
       pkts -= sfwk->skip;
       sfwk->pool += sfwk->skip;

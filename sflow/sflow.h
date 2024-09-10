@@ -24,11 +24,16 @@
 
 #include <vppinfra/hash.h>
 #include <vppinfra/error.h>
+#include <svm/svm_fifo.h>
+#include <svm/svm_common.h>
+#include <svm/fifo_segment.h>
 #include <sflow/sflow_psample.h>
 
+#define SFLOW_DEFAULT_SAMPLING_N 10000
 #define SFLOW_DEFAULT_HEADER_BYTES 128
 #define SFLOW_MAX_HEADER_BYTES 256
-#define SFLOW_MAX_FIFO_QUEUEDEPTH 128
+#define SFLOW_FIFO_SLICE 512
+#define SFLOW_FIFO_SIZE 4096 * SFLOW_FIFO_SLICE
 
 typedef struct {
   u32 samplingN;
@@ -51,6 +56,9 @@ typedef struct {
   u32 seed;
   u32 seqN;
   u32 drop;
+  fifo_segment_main_t fsm;
+  fifo_segment_t *fs;
+  svm_fifo_t *fifo;
 } sflow_per_thread_data_t;
 
 /* private to main thread */
@@ -79,6 +87,11 @@ typedef struct {
 
   /* psample channel */
   SFLOWPS sflow_psample;
+  /* sample-processing thread */
+  pthread_t spthread;
+  /* running control */
+  int running;
+  u32 interfacesEnabled;
 } sflow_main_t;
 
 extern sflow_main_t sflow_main;

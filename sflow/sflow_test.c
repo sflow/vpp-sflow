@@ -43,7 +43,6 @@ static int api_sflow_enable_disable (vat_main_t * vam)
   unformat_input_t * i = vam->input;
   int enable_disable = 1;
   u32 sw_if_index = ~0;
-  u32 sampling_N = ~0;
   vl_api_sflow_enable_disable_t * mp;
   int ret;
 
@@ -51,8 +50,6 @@ static int api_sflow_enable_disable (vat_main_t * vam)
   while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
     {
       if (unformat (i, "%U", unformat_sw_if_index, vam, &sw_if_index))
-	;
-      else if (unformat (i, "sampling_N %d", &sampling_N))
 	;
       else if (unformat (i, "disable"))
 	enable_disable = 0;
@@ -66,6 +63,35 @@ static int api_sflow_enable_disable (vat_main_t * vam)
       return -99;
     }
   
+  /* Construct the API message */
+  M(SFLOW_ENABLE_DISABLE, mp);
+  mp->sw_if_index = ntohl (sw_if_index);
+  mp->enable_disable = enable_disable;
+
+  /* send it... */
+  S(mp);
+
+  /* Wait for a reply... */
+  W (ret);
+  return ret;
+}
+
+static int api_sflow_sampling_rate (vat_main_t * vam)
+{
+  unformat_input_t * i = vam->input;
+  u32 sampling_N = ~0;
+  vl_api_sflow_sampling_rate_t * mp;
+  int ret;
+  
+  /* Parse args required to build the message */
+  while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (i, "sampling_N %d", &sampling_N))
+	;
+      else
+	break;
+    }
+  
   if (sampling_N == ~0)
     {
       errmsg ("missing sampling_N number \n");
@@ -73,10 +99,8 @@ static int api_sflow_enable_disable (vat_main_t * vam)
     }
 
   /* Construct the API message */
-  M(SFLOW_ENABLE_DISABLE, mp);
-  mp->sw_if_index = ntohl (sw_if_index);
+  M(SFLOW_SAMPLING_RATE, mp);
   mp->sampling_N = ntohl (sampling_N);
-  mp->enable_disable = enable_disable;
 
   /* send it... */
   S(mp);

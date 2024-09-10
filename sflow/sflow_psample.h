@@ -63,6 +63,7 @@ typedef struct _SFLOWPSSpec {
 } SFLOWPSSpec;
 
 bool SFLOWPS_open(SFLOWPS *pst);
+bool SFLOWPS_close(SFLOWPS *pst);
 
 bool SFLOWPSSpec_setAttr(SFLOWPSSpec *spec, EnumSFLOWPSAttributes field, void *buf, int len);
 #define SFLOWPSSpec_setAttrInt(spec, field, val) SFLOWPSSpec_setAttr((spec), (field), &(val), sizeof(val))

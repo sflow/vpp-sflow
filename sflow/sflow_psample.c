@@ -348,6 +348,25 @@ extern "C" {
   }
 
   /*_________________---------------------------__________________
+    _________________       SFLOWPS_close       __________________
+    -----------------___________________________------------------
+  */
+  
+  bool SFLOWPS_close(SFLOWPS *pst) {
+    if(pst->nl_sock != 0) {
+      int err = close(pst->nl_sock);
+      if(err == 0) {
+	pst->nl_sock = 0;
+	return true;
+      }
+      else {
+	clib_warning("SFLOWPS_close: returned %d : %s\n", err, strerror(errno));
+      }
+    }
+    return false;
+  }
+
+  /*_________________---------------------------__________________
     _________________    SFLOWPSSpec_setAttr    __________________
     -----------------___________________________------------------
   */
