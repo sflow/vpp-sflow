@@ -67,7 +67,10 @@ vlib_node_registration_t sflow_node;
 #endif /* CLIB_MARCH_VARIANT */
 
 #define foreach_sflow_error \
-_(PROCESSED, "sflow packets processed")
+  _ (PROCESSED, "sflow packets processed") \
+  _ (SAMPLED, "sflow packets sampled") \
+  _ (DROPPED, "sflow packets dropped") \
+  _ (CYCLES, "CPU cycles in sent samples")     /* SENT=SAMPLED-DROPPED */
 
 typedef enum {
 #define _(sym,str) SFLOW_ERROR_##sym,
@@ -92,14 +95,12 @@ typedef enum
 } sflow_next_t;
 
 
-#ifdef SFLOW_LOG_CYCLES
 static inline uint64_t get_cycles()
 {
   uint64_t t;
   __asm volatile ("rdtsc" : "=A"(t));
   return t;
 }
-#endif
 
 #ifdef SFLOW_SEND_VIA_MAIN
 always_inline void sflow_send_sample(u8 *args) {
@@ -162,7 +163,7 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
 {
   u32 n_left_from, * from, * to_next;
   sflow_next_t next_index;
-  u32 pkts_processed = 0;
+  u32 pkts_processed = 0, pkts_sampled = 0, pkts_dropped = 0;
 
   sflow_main_t * smp = &sflow_main;
   from = vlib_frame_vector_args (frame);
@@ -190,9 +191,7 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
     // the Arista one "sflow enable GigabitEthernet0/8/0 dangerous 1"
     // so that 1:1 can still be set if you know what you are doing :)
     while(pkts > sfwk->skip) {
-#ifdef SFLOW_LOG_CYCLES
       uint64_t cycles1 = get_cycles();
-#endif
       /* reach in to get the one we want. */
       vlib_buffer_t *bN = vlib_get_buffer (vm, from[sfwk->skip]);
       /* Seems unlikely that prefetch is going to help here. */
@@ -248,6 +247,7 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
 	 * trouble.
 	 */
 	sfwk->drop++;
+	pkts_dropped++;
       }
       else {
 #endif
@@ -260,6 +260,7 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
 	  .thread_seqN = sfwk->seqN,
 	  .thread_drop = sfwk->drop
 	};
+	pkts_sampled++;
 
 	//clib_warning("sflow hw if_index = %u, rpc_queue_depth=%u",
 	//		     hw->hw_if_index,
@@ -283,10 +284,11 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
       pkts -= sfwk->skip;
       sfwk->pool += sfwk->skip;
       sfwk->skip = sflow_next_random_skip(sfwk);
-#ifdef SFLOW_LOG_CYCLES
       uint64_t cycles2 = get_cycles();
+#ifdef SFLOW_LOG_CYCLES
       clib_warning("sample cycles = %u", (cycles2 - cycles1));
 #endif
+      vlib_node_increment_counter (vm, sflow_node.index, SFLOW_ERROR_CYCLES, (cycles2-cycles1));
     }
   }
 
@@ -434,8 +436,11 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
   }
   
   // does this increment atomically or per-cpu?
-  vlib_node_increment_counter (vm, sflow_node.index, 
-                               SFLOW_ERROR_PROCESSED, pkts_processed);
+  vlib_node_increment_counter (vm, sflow_node.index, SFLOW_ERROR_PROCESSED, pkts_processed);
+  if (pkts_sampled)
+    vlib_node_increment_counter (vm, sflow_node.index, SFLOW_ERROR_SAMPLED, pkts_sampled);
+  if (pkts_dropped)
+    vlib_node_increment_counter (vm, sflow_node.index, SFLOW_ERROR_DROPPED, pkts_dropped);
   return frame->n_vectors;
 }
 
