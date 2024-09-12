@@ -28,16 +28,101 @@
 #include <sflow/sflow.api_types.h>
 #include <sflow/sflow_psample.h>
 
+#include <vpp-api/client/stat_client.h>
+#include <vlib/stats/stats.h>
+
 #define REPLY_MSG_ID_BASE smp->msg_id_base
 #include <vlibapi/api_helper_macros.h>
 
 sflow_main_t sflow_main;
+
+static void
+sflow_stat_segment_client_init (void)
+{
+  stat_client_main_t *scm = &stat_client_main;
+  vlib_stats_segment_t *sm = vlib_stats_get_segment ();
+  uword size;
+
+  size = sm->memory_size ? sm->memory_size : STAT_SEGMENT_DEFAULT_SIZE;
+  scm->memory_size = size;
+  scm->shared_header = sm->shared_header;
+  scm->directory_vector =
+    stat_segment_adjust (scm, (void *) scm->shared_header->directory_vector);
+}
+
+static void
+dump_counter_vector_combined(stat_segment_data_t *res) {
+  u8 *name = (u8 *)res->name;
+  for (int k = 0; k < vec_len (res->simple_counter_vec); k++) {
+    for (int j = 0; j < vec_len (res->combined_counter_vec[k]); j++) {
+      u64 pkts = res->combined_counter_vec[k][j].packets;
+      u64 byts = res->combined_counter_vec[k][j].bytes;
+      if(pkts || byts) {
+	clib_warning("%s_packets{thread=\"%d\",interface=\"%d\"} %lld\n",
+		     name, k, j, pkts);
+	clib_warning("%s_bytes{thread=\"%d\",interface=\"%d\"} %lld\n",
+		     name, k, j, byts);
+      }
+    }
+  }
+}
+
+static void try_stats_dump(sflow_main_t *smp) {
+  // TODO: what is expected in patterns? This doesn't work:
+  u8 *patterns[] = { NULL, NULL };
+  patterns[0] = (u8 *)"interfaces";
+  // This gives us a list of stat integers
+  u32 *stats = stat_segment_ls(NULL);
+  stat_segment_data_t *res = NULL;
+ retry:
+  res = stat_segment_dump (stats);
+  if (res == NULL) {
+    /* Memory layout has changed */
+    if (stats)
+      vec_free (stats);
+    stats = stat_segment_ls (NULL);
+    goto retry;
+  }
+  // And we can grab a vector of stat_segment_data_t objects
+  res = stat_segment_dump (stats);
+  for (int ii = 0; ii < vec_len (res); ii++) {
+    switch (res[ii].type) {
+    case STAT_DIR_TYPE_COUNTER_VECTOR_SIMPLE:
+      // s = dump_counter_vector_simple (&res[ii], s, used_only);
+      //clib_warning("stat simple: %s\n", res[ii].name);
+      break;
+    case STAT_DIR_TYPE_COUNTER_VECTOR_COMBINED:
+      // clib_warning("stat combined: %s\n", res[ii].name);
+      dump_counter_vector_combined (&res[ii]);
+      break;
+    case STAT_DIR_TYPE_SCALAR_INDEX:
+      //clib_warning("stat scalar: %s\n", res[ii].name);
+      //s = dump_scalar_index (&res[ii], s, used_only);
+      break;
+    case STAT_DIR_TYPE_NAME_VECTOR:
+      //clib_warning("stat name_vector: %s\n", res[ii].name);
+      //s = dump_name_vector (&res[ii], s, used_only);
+      break;
+    case STAT_DIR_TYPE_EMPTY:
+      break;
+    default:
+      clib_warning ("Unknown value %d\n", res[ii].type);
+      break;
+    }
+  }
+  stat_segment_data_free(res);
+  vec_free(stats);
+}
 
 /* Action function shared between message handler and debug CLI */
 static void *spt_process_samples(void *ctx) {
   sflow_main_t *smp = (sflow_main_t *)ctx;
   vlib_set_thread_name("sflow");
   struct timespec ts = { .tv_sec = 0, .tv_nsec = 1000 };
+
+  // TODO: make this periodic and write in binary to my shared-mem export
+  try_stats_dump(smp);
+  
   while(smp->running) {
     nanosleep(&ts, NULL);
     for(u32 thread_index = 0; thread_index < smp->total_threads; thread_index++) {
@@ -66,7 +151,7 @@ static void *spt_process_samples(void *ctx) {
 void sflow_start(sflow_main_t *smp) {
   clib_warning("sflow_start");
   smp->running = 1;
-  
+ 
   /* set up (or reset) sampling context for each thread */
   vlib_thread_main_t *tm = &vlib_thread_main;
   smp->total_threads = 1 + tm->n_threads;
@@ -104,6 +189,74 @@ void sflow_start(sflow_main_t *smp) {
   /* open PSAMPLE netlink channel for writing */
   SFLOWPS_open(&smp->sflow_psample);
 
+  /* establish shared memory coumter export. TODO: Since this is aimed at
+   * external programs like hsflowd maybe we should use only the most generic
+   * calls (see man shm_open) so that the other side sees exactly what it
+   * expects?
+   */
+
+#ifdef SFLOW_TRY_WITH_SSVM
+  if(smp->ssvm.ssvm_size == 0) {
+    // TODO: learn what these parameters mean.
+    smp->ssvm.ssvm_size = 2000000;
+    smp->ssvm.is_server = 1;
+    smp->ssvm.name = format(0, "%s%c", "vpp-sflow-counters", 0);
+    int rv = ssvm_server_init(&smp->ssvm, SSVM_SEGMENT_SHM);
+    clib_warning("ssvm_server_init() returned %d", rv);
+    if(rv == 0) {
+      smp->ssvm.sh->ready = 1;
+    }
+    // put some data into the shared memory area
+    uint64_t test_ctr_data[] = {
+      1, // version
+      10 * sizeof(uint64_t), // length
+      4,5,6,7,8,9,10,11,12,13 // numbers
+    };
+    u8 *test = ssvm_mem_alloc(&smp->ssvm, sizeof(test_ctr_data));
+    memcpy(test, test_ctr_data, sizeof(test_ctr_data));
+    // now it should be possible for hsflowd to read it from there?
+    // Nope - must have misunderstood something. Perhaps we can just
+    // use shm_open + mmap directly (see below)
+  }
+#else
+  if(smp->shmp == NULL) {
+    /* TODO: decide on permissions */
+    int fd = shm_open(SFLOW_SHM_PATH,
+		      O_CREAT | O_RDWR /* | O_EXCL */,
+		      S_IRUSR | S_IWUSR);
+    if(fd == -1) {
+      clib_warning("shm_open(%s) error: %s\n", SFLOW_SHM_PATH, strerror(errno));
+    }
+    else {
+      if(ftruncate(fd, SFLOW_SHM_SIZE) == -1) {
+	clib_warning("ftruncate(%s) error: %s\n", SFLOW_SHM_PATH, strerror(errno));
+	shm_unlink(SFLOW_SHM_PATH);
+      }
+      else {
+	// TODO: should we include MAP_HUGETLB|MAP_HUGE_2MB or does it not matter?
+	smp->shmp = mmap(NULL, SFLOW_SHM_SIZE,
+			 PROT_READ | PROT_WRITE,
+			 MAP_SHARED, fd, 0);
+	close(fd);
+	if(smp->shmp == MAP_FAILED) {
+	  clib_warning("mmap(%s) error: %s\n", SFLOW_SHM_PATH, strerror(errno));
+	  shm_unlink(SFLOW_SHM_PATH);
+	  // Clear ptr so we will try again if sflow is disabled then enabled.
+	  smp->shmp = NULL;
+	}
+	else {
+	  // Wipe, then initialize header.
+	  memset(smp->shmp, 0, SFLOW_SHM_SIZE);
+	  sflow_shm_hdr_t *hdr = &smp->shmp->hdr;
+	  sem_init(&hdr->sem, 1, 0);
+	  hdr->version = SFLOW_SHM_VERSION;
+	  hdr->ports = 0;
+	}
+      }
+    }
+  }
+#endif
+  
   /* fork sample-processing thread */
   pthread_attr_t attr;
   pthread_attr_init(&attr);
@@ -118,6 +271,11 @@ void sflow_stop(sflow_main_t *smp) {
      never return so perhaps we should pthread_cancel() it instead? */
   smp->running = 0;
   SFLOWPS_close(&smp->sflow_psample);
+  if(smp->shmp) {
+    munmap(smp->shmp, SFLOW_SHM_SIZE);
+    shm_unlink(SFLOW_SHM_PATH);
+    smp->shmp = NULL;
+  }
   //pthread_cancel(smp->spthread, NULL);
   pthread_join(smp->spthread, NULL);
   clib_warning("sflow_stop_done");
@@ -312,6 +470,9 @@ static clib_error_t * sflow_init (vlib_main_t * vm)
 
   /* Add our API messages to the global name_crc hash table */
   smp->msg_id_base = setup_message_id_table ();
+
+  /* access to counters */
+  sflow_stat_segment_client_init();
   return error;
 }
 

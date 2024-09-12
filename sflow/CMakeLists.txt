@@ -17,6 +17,7 @@ add_vpp_plugin(sflow
   sflow.c
   node.c
   sflow.h
+  sflow_shm.h
   sflow_psample.c
   sflow_psample.h
   sflow_psample_fields.h
@@ -29,4 +30,7 @@ add_vpp_plugin(sflow
 
   API_TEST_SOURCES
   sflow_test.c
+
+  LINK_LIBRARIES
+  vppapiclient
 )

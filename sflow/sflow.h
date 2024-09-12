@@ -1,6 +1,6 @@
 
 /*
- * sflow.h - skeleton vpp engine plug-in header file
+ * sflow.h - sflow plug-in header file
  *
  * Copyright (c) <current-year> <your-organization>
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -28,6 +28,7 @@
 #include <svm/svm_common.h>
 #include <svm/fifo_segment.h>
 #include <sflow/sflow_psample.h>
+#include <sflow/sflow_shm.h>
 
 #define SFLOW_DEFAULT_SAMPLING_N 10000
 #define SFLOW_DEFAULT_HEADER_BYTES 128
@@ -35,6 +36,7 @@
 #define SFLOW_FIFO_SLICE 512
 #define SFLOW_FIFO_SIZE 4096 * SFLOW_FIFO_SLICE
 
+/* packet sample */
 typedef struct {
   u32 samplingN;
   u32 input_if_index;
@@ -87,11 +89,21 @@ typedef struct {
 
   /* psample channel */
   SFLOWPS sflow_psample;
+
   /* sample-processing thread */
   pthread_t spthread;
+
   /* running control */
   int running;
   u32 interfacesEnabled;
+
+  /* shared memory counter export */
+#define SFLOW_SHM_SIZE 2000000
+#ifdef SFLOW_TRY_WITH_SSVM
+  ssvm_private_t ssvm;
+#else
+  sflow_shm_t *shmp;
+#endif
 } sflow_main_t;
 
 extern sflow_main_t sflow_main;
