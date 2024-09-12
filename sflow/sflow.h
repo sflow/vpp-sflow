@@ -69,6 +69,14 @@ typedef struct {
   u32 drop;
 } sflow_main_per_thread_data_t;
 
+/* private to main thread
+   TODO: assuming polling is also moved to main thread */
+typedef struct {
+  u32 hw_if_index;
+  int sflow_enabled;
+  // TODO: possibly keep cache of counter index numbers here?
+} sflow_main_per_interface_data_t;
+
 typedef struct {
   /* API message ID base */
   u16 msg_id_base;
@@ -85,6 +93,7 @@ typedef struct {
   u32 *per_thread_seqN;
   u32 *per_thread_drop;
   sflow_main_per_thread_data_t *main_per_thread_data;
+  sflow_main_per_interface_data_t *main_per_interface_data;
   sflow_per_thread_data_t *per_thread_data;
 
   /* psample channel */

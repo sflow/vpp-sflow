@@ -302,6 +302,7 @@ int sflow_sampling_rate (sflow_main_t * smp, u32 samplingN)
 int sflow_enable_disable (sflow_main_t * smp, u32 sw_if_index, int enable_disable)
 {
   vnet_sw_interface_t * sw;
+  vnet_hw_interface_t * hw;
   
   /* Utterly wrong? */
   if (pool_is_free_index (smp->vnet_main->interface_main.sw_interfaces,
@@ -313,15 +314,37 @@ int sflow_enable_disable (sflow_main_t * smp, u32 sw_if_index, int enable_disabl
   if (sw->type != VNET_SW_INTERFACE_TYPE_HARDWARE)
     return VNET_API_ERROR_INVALID_SW_IF_INDEX;
 
-  /* keep a count so we know when to turn on or off */
-  smp->interfacesEnabled += (enable_disable) ? 1 : -1;
+  // note: vnet_interface_main_t has "fast lookup table" called
+  // he_if_index_by_sw_if_index.
+  clib_warning("sw_if_index=%u, sup_sw_if_index=%u, hw_if_index=%u\n",
+	       sw->sw_if_index,
+	       sw->sup_sw_if_index,
+	       sw->hw_if_index);
+  for(int ii = 0; ii < VNET_N_MTU; ii++)
+    clib_warning("mtu[%u]=%u\n", ii, sw->mtu[ii]);
 
-  /* insert in graph */
-  /* TODO: do we need to do this for every interface? */
-  /* TODO: what happens if we enable, disable and then enable again */
-  vnet_feature_enable_disable ("device-input", "sflow",
-                               sw_if_index, enable_disable, 0, 0);
+  hw = vnet_get_hw_interface(smp->vnet_main, sw->hw_if_index);
+  
+  u64 speed = hw->link_speed;
+  speed *= 1000; // TODO: or 1024?
+  clib_warning("hw interface name=%s speed=%llu\n", hw->name, speed);
+  // note: vnet_hw_interface_t has uword *bond_info
+  // (where 0=>none, ~0 => slave, other=>ptr to bitmap of slaves)
 
+  vec_validate (smp->main_per_interface_data, sw->hw_if_index);
+  sflow_main_per_interface_data_t *sfif = vec_elt_at_index(smp->main_per_interface_data, sw->hw_if_index);
+  if(enable_disable == sfif->sflow_enabled) {
+    // TODO: decide which error for (a) redundant enable and (b) redundant disable
+    return VNET_API_ERROR_VALUE_EXIST;
+  }
+  else {
+    // OK, turn it on or off
+    sfif->sflow_enabled = enable_disable;
+    vnet_feature_enable_disable ("device-input", "sflow", sw_if_index, enable_disable, 0, 0);
+    smp->interfacesEnabled += (enable_disable) ? 1 : -1;
+  }
+  
+  
   sflow_sampling_start_stop(smp);
   return 0;
 }
