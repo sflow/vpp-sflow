@@ -396,7 +396,7 @@ extern "C" {
     -----------------___________________________------------------
   */
 
-  void SFLOWPSSpec_send(SFLOWPS *pst, SFLOWPSSpec *spec) {
+  int SFLOWPSSpec_send(SFLOWPS *pst, SFLOWPSSpec *spec) {
     // clib_warning("send_psample getuid=%d geteuid=%d\n", getuid(), geteuid());
 
     spec->nlh.nlmsg_len = NLMSG_LENGTH(sizeof(spec->ge) + spec->attrs_len);
@@ -447,6 +447,10 @@ extern "C" {
 
     int status = sendmsg(pst->nl_sock, &msg, 0);
     // clib_warning("sendmsg returned %d\n", status);
-    if(status <= 0)
-      clib_warning("strerror(errno) = %s\n", strerror(errno));
+    if (status <= 0) {
+      if (errno != EMSGSIZE)
+        clib_warning("strerror(errno) = %s; errno = %d\n", strerror(errno), errno);
+      return -1;
+    }
+    return 0;
   }

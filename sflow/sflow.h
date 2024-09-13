@@ -36,6 +36,21 @@
 #define SFLOW_FIFO_SLICE 512
 #define SFLOW_FIFO_SIZE 4096 * SFLOW_FIFO_SLICE
 
+#define foreach_sflow_error \
+  _ (PROCESSED, "sflow packets processed") \
+  _ (SAMPLED, "sflow packets sampled") \
+  _ (DROPPED, "sflow packets dropped") \
+  _ (CYCLES, "CPU cycles in sent samples") \
+  _ (PSAMPLE_SEND, "sflow PSAMPLE sent") \
+  _ (PSAMPLE_SEND_FAIL, "sflow PSAMPLE send failed")
+
+typedef enum {
+#define _(sym,str) SFLOW_ERROR_##sym,
+  foreach_sflow_error
+#undef _
+  SFLOW_N_ERROR,
+} sflow_error_t;
+
 /* packet sample */
 typedef struct {
   u32 samplingN;
