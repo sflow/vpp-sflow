@@ -27,10 +27,12 @@
 #include <svm/svm_fifo.h>
 #include <svm/svm_common.h>
 #include <svm/fifo_segment.h>
+
 #include <sflow/sflow_psample.h>
-#include <sflow/sflow_shm.h>
+#include <sflow/sflow_usersock.h>
 
 #define SFLOW_DEFAULT_SAMPLING_N 10000
+#define SFLOW_DEFAULT_POLLING_S 20
 #define SFLOW_DEFAULT_HEADER_BYTES 128
 #define SFLOW_MAX_HEADER_BYTES 256
 #define SFLOW_FIFO_SLICE 512
@@ -88,6 +90,7 @@ typedef struct {
 
   /* sampling state */
   u32 samplingN;
+  u32 pollingS;
   u32 header_bytes;
   u32 total_threads;
   u32 *per_thread_seqN;
@@ -96,23 +99,22 @@ typedef struct {
   sflow_main_per_interface_data_t *main_per_interface_data;
   sflow_per_thread_data_t *per_thread_data;
 
-  /* psample channel */
+  /* psample channel (packet samples) */
   SFLOWPS sflow_psample;
-
+  /* usersock channel (periodic counters) */
+  SFLOWUS sflow_usersock;
+#define SFLOW_NETLINK_USERSOCK_MULTICAST 29
+  /* dropmon channel (packet drops) */
+  // SFLOWDM sflow_dropmon;
+  
   /* sample-processing thread */
   pthread_t spthread;
+  u32 now_mono_S;
 
   /* running control */
   int running;
   u32 interfacesEnabled;
 
-  /* shared memory counter export */
-#define SFLOW_SHM_SIZE 2000000
-#ifdef SFLOW_TRY_WITH_SSVM
-  ssvm_private_t ssvm;
-#else
-  sflow_shm_t *shmp;
-#endif
 } sflow_main_t;
 
 extern sflow_main_t sflow_main;

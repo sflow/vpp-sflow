@@ -135,6 +135,58 @@ extern "C" {
     return sendmsg(sockfd, &msg, 0);
   }
 
+  #if 0
+  /*_________________---------------------------__________________
+    _________________        usersock_open      __________________
+    -----------------___________________________------------------
+  */
+
+  static int usersock_open(u32 mod_id) {
+    int nl_sock = socket(AF_NETLINK, SOCK_RAW, NETLINK_USERSOCK);
+    if(nl_sock < 0) {
+      clib_warning("nl_sock open failed: %s\n", strerror(errno));
+      return -1;
+    }
+    // bind to a suitable id
+    struct sockaddr_nl sa = { .nl_family = AF_NETLINK,
+      .nl_pid = mod_id };
+    if(bind(nl_sock, (struct sockaddr *)&sa, sizeof(sa)) < 0)
+      clib_warning("usersock_open: bind failed: %s\n", strerror(errno));
+    setNonBlocking(nl_sock);
+    setCloseOnExec(nl_sock);
+    return nl_sock;
+  }
+
+  /*_________________---------------------------__________________
+    _________________     usersock_send         __________________
+    -----------------___________________________------------------
+  */
+  
+  static int usersock_send(int sockfd, u32 mod_id, int type, int cmd, int req_type, void *req, int req_len, u32 seqNo) {
+    struct nlmsghdr nlh = { };
+    struct nlattr attr = { };
+    int req_footprint = NLMSG_ALIGN(req_len);
+
+    attr.nla_len = sizeof(attr) + req_len;
+    attr.nla_type = req_type;
+
+    nlh.nlmsg_len = NLMSG_LENGTH(req_footprint + sizeof(attr));
+    nlh.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    nlh.nlmsg_type = type;
+    nlh.nlmsg_seq = seqNo;
+    nlh.nlmsg_pid = mod_id;
+
+    struct iovec iov[4] = {
+      { .iov_base = &nlh,  .iov_len = sizeof(nlh) },
+      { .iov_base = &attr, .iov_len = sizeof(attr) },
+      { .iov_base = req,   .iov_len = req_footprint }
+    };
+
+    struct sockaddr_nl sa = { .nl_family = AF_NETLINK };
+    struct msghdr msg = { .msg_name = &sa, .msg_namelen = sizeof(sa), .msg_iov = iov, .msg_iovlen = 3 };
+    return sendmsg(sockfd, &msg, 0);
+  }
+#endif
 
   /*_________________---------------------------__________________
     _________________    getFamily_PSAMPLE      __________________
@@ -237,6 +289,8 @@ extern "C" {
     }
   }
 
+  // TODO: we can take out the fns for reading PSAMPLE here
+  
   /*_________________---------------------------__________________
     _________________      processNetlink       __________________
     -----------------___________________________------------------
@@ -433,14 +487,14 @@ extern "C" {
     }
     ASSERT(nn == spec->n_attrs);
 
-    struct sockaddr_nl sa = {
+    struct sockaddr_nl da = {
       .nl_family = AF_NETLINK,
       .nl_groups = (1 << (pst->group_id-1))
     };
 
     struct msghdr msg = {
-      .msg_name = &sa,
-      .msg_namelen = sizeof(sa),
+      .msg_name = &da,
+      .msg_namelen = sizeof(da),
       .msg_iov = iov,
       .msg_iovlen = frag
     };

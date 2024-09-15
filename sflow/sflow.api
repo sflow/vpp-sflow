@@ -66,3 +66,20 @@ autoreply define sflow_sampling_rate {
     /* Sampling_N */
     u32 sampling_N [default=10000];
 };
+
+/** @brief API to set sflow polling-interval
+    @param client_index - opaque cookie to identify the sender
+    @param context - sender context, to match reply w/ request
+    @param polling_S - polling interval in seconds
+*/
+
+autoreply define sflow_polling_interval {
+    /* Client identifier, set from api_main.my_client_index */
+    u32 client_index;
+
+    /* Arbitrary context, so client can match reply to request */
+    u32 context;
+
+    /* Polling_S */
+    u32 polling_S [default=20];
+};

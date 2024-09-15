@@ -48,24 +48,27 @@ typedef struct {
 /* Shared memory ports */
 typedef struct {
   u8 portName[SFLOW_MAX_PORTNAME_LEN+1];
-  u32 vpp_sw_if_index;
+  u32 hw_if_index;
   u32 linux_if_index;
   // TODO: populate these agg (bond) parent numbers too, where applicable.
   u32 vpp_agg_if_index;
   u32 linux_agg_if_index;
   sflow_shm_ctrs_t rx;
   sflow_shm_ctrs_t tx;
+  u64 ifSpeed;
+  u32 counter_updates;
 } sflow_shm_port_t;
 
 /* Shared memory header */
 typedef struct {
   sem_t sem;
   u32 version;
-  u32 ports;
+  u32 max_port;
 } sflow_shm_hdr_t;
 
+#define SFLOW_SHM_PORT_NONE 0
 #define SFLOW_SHM_MAX_PORTS (SFLOW_SHM_SIZE - sizeof(sflow_shm_hdr_t)) / sizeof(sflow_shm_port_t)
-
+#define SFLOW_SHM_SIGN 0x5F106343
 typedef struct {
   sflow_shm_hdr_t hdr;
   sflow_shm_port_t port[SFLOW_SHM_MAX_PORTS];

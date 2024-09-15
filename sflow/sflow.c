@@ -51,29 +51,42 @@ sflow_stat_segment_client_init (void)
 }
 
 static void
-dump_counter_vector_combined(stat_segment_data_t *res) {
+update_counter_vector_combined(sflow_main_t *smp, stat_segment_data_t *res, SFL_if_counters_t *ifCtrs, u32 hw_if_index) {
   u8 *name = (u8 *)res->name;
-  for (int k = 0; k < vec_len (res->simple_counter_vec); k++) {
-    for (int j = 0; j < vec_len (res->combined_counter_vec[k]); j++) {
-      u64 pkts = res->combined_counter_vec[k][j].packets;
-      u64 byts = res->combined_counter_vec[k][j].bytes;
+  for (int th = 0; th < vec_len (res->simple_counter_vec); th++) {
+    for (int intf = 0; intf < vec_len (res->combined_counter_vec[intf]); intf++) {
+      if(intf != hw_if_index)
+	continue;
+      u64 pkts = res->combined_counter_vec[th][intf].packets;
+      u64 byts = res->combined_counter_vec[th][intf].bytes;
       if(pkts || byts) {
 	clib_warning("%s_packets{thread=\"%d\",interface=\"%d\"} %lld\n",
-		     name, k, j, pkts);
+		     name, th, intf, pkts);
 	clib_warning("%s_bytes{thread=\"%d\",interface=\"%d\"} %lld\n",
-		     name, k, j, byts);
+		     name, th, intf, byts);
+	// TODO: do we really have to look at the name string to know what it is?
+	if(strstr((char *)name, "/tx_")) {
+	  ifCtrs->ifOutUcastPkts += pkts;
+	  ifCtrs->ifOutOctets += byts;
+	}
+	if(strstr((char *)name, "/rx_")) {
+	  ifCtrs->ifInUcastPkts += pkts;
+	  ifCtrs->ifInOctets += byts;
+	}
       }
     }
   }
 }
 
-static void try_stats_dump(sflow_main_t *smp) {
+static void update_counters(sflow_main_t *smp, sflow_main_per_interface_data_t *sfif) {
+  vnet_hw_interface_t *hw = vnet_get_hw_interface(smp->vnet_main, sfif->hw_if_index);
   // TODO: what is expected in patterns? This doesn't work:
   u8 *patterns[] = { NULL, NULL };
   patterns[0] = (u8 *)"interfaces";
   // This gives us a list of stat integers
   u32 *stats = stat_segment_ls(NULL);
   stat_segment_data_t *res = NULL;
+  // And we can grab a vector of stat_segment_data_t objects
  retry:
   res = stat_segment_dump (stats);
   if (res == NULL) {
@@ -83,8 +96,18 @@ static void try_stats_dump(sflow_main_t *smp) {
     stats = stat_segment_ls (NULL);
     goto retry;
   }
-  // And we can grab a vector of stat_segment_data_t objects
-  res = stat_segment_dump (stats);
+
+  u64 speed = hw->link_speed;
+  speed = (speed == ~0) ? 0 : (speed * 1000); // TODO or 1024?
+
+  SFL_if_counters_t ifCtrs = {
+    .ifIndex = sfif->hw_if_index,
+    .ifType = 6, // ethernetcsmacd
+    .ifSpeed = speed,
+    .ifStatus = SFLSTATUS_ADMIN_UP | SFLSTATUS_OPER_UP,
+    .ifDirection = 1, // full-duplex
+  };
+  // and accumulate the (per-thread) entries for this interface
   for (int ii = 0; ii < vec_len (res); ii++) {
     switch (res[ii].type) {
     case STAT_DIR_TYPE_COUNTER_VECTOR_SIMPLE:
@@ -93,7 +116,7 @@ static void try_stats_dump(sflow_main_t *smp) {
       break;
     case STAT_DIR_TYPE_COUNTER_VECTOR_COMBINED:
       // clib_warning("stat combined: %s\n", res[ii].name);
-      dump_counter_vector_combined (&res[ii]);
+      update_counter_vector_combined (smp, &res[ii], &ifCtrs, sfif->hw_if_index);
       break;
     case STAT_DIR_TYPE_SCALAR_INDEX:
       //clib_warning("stat scalar: %s\n", res[ii].name);
@@ -112,6 +135,12 @@ static void try_stats_dump(sflow_main_t *smp) {
   }
   stat_segment_data_free(res);
   vec_free(stats);
+  // send the structure via netlink
+  SFLOWUSSpec spec = {};
+  SFLOWUSSpec_setAttrInt(&spec, SFLOWUS_ATTR_IFINDEX, sfif->hw_if_index);
+  SFLOWUSSpec_setAttr(&spec, SFLOWUS_ATTR_PORTNAME, hw->name, strlen((char *)hw->name));
+  SFLOWUSSpec_setAttr(&spec, SFLOWUS_ATTR_COUNTERS_GENERIC, &ifCtrs, sizeof(ifCtrs));
+  SFLOWUSSpec_send(&smp->sflow_usersock, &spec);
 }
 
 /* Action function shared between message handler and debug CLI */
@@ -119,12 +148,26 @@ static void *spt_process_samples(void *ctx) {
   sflow_main_t *smp = (sflow_main_t *)ctx;
   vlib_set_thread_name("sflow");
   struct timespec ts = { .tv_sec = 0, .tv_nsec = 1000 };
-
-  // TODO: make this periodic and write in binary to my shared-mem export
-  try_stats_dump(smp);
   
   while(smp->running) {
+    struct timespec now_mono;
+    clock_gettime (CLOCK_MONOTONIC, &now_mono);
+    if(now_mono.tv_sec != smp->now_mono_S) {
+      // second rollover
+      smp->now_mono_S = now_mono.tv_sec;
+      // see if we should poll one or more interfaces
+      for(int ii = 0; ii < vec_len(smp->main_per_interface_data); ii++) {
+	sflow_main_per_interface_data_t *sfif = vec_elt_at_index(smp->main_per_interface_data, ii);
+	if(sfif
+	   && sfif->sflow_enabled
+	   && (smp->now_mono_S % smp->pollingS) == (sfif->hw_if_index % smp->pollingS)) {
+	  update_counters(smp, sfif);
+	}
+      }
+    }
+    
     nanosleep(&ts, NULL);
+    
     for(u32 thread_index = 0; thread_index < smp->total_threads; thread_index++) {
       sflow_per_thread_data_t *sfwk = vec_elt_at_index(smp->per_thread_data, thread_index);
       // TODO: dequeue and write multiple samples at a time
@@ -148,10 +191,24 @@ static void *spt_process_samples(void *ctx) {
   return NULL;
 }
 
-void sflow_start(sflow_main_t *smp) {
-  clib_warning("sflow_start");
+static void init_worker_fifo(sflow_per_thread_data_t *sfwk) {
+  fifo_segment_create_args_t _a, *a = &_a;
+  clib_memset (a, 0, sizeof (*a));
+  // TODO: do we need separate name for each worker FIFO?
+  a->segment_name = "fifo-sflow-worker";
+  a->segment_size = SFLOW_FIFO_SIZE;
+  a->segment_type = SSVM_SEGMENT_PRIVATE;
+  // TODO: test return codes and print errors
+  fifo_segment_create(&sfwk->fsm, a);
+  sfwk->fs = fifo_segment_get_segment(&sfwk->fsm, a->new_segment_indices[0]);
+  // TODO: try to understand what these parameters mean
+  sfwk->fifo = fifo_segment_alloc_fifo_w_slice(sfwk->fs, 0, SFLOW_FIFO_SLICE, FIFO_SEGMENT_TX_FIFO);
+}
+
+static void sflow_sampling_start(sflow_main_t *smp) {
+  clib_warning("sflow_sampling_start");
   smp->running = 1;
- 
+
   /* set up (or reset) sampling context for each thread */
   vlib_thread_main_t *tm = &vlib_thread_main;
   smp->total_threads = 1 + tm->n_threads;
@@ -162,20 +219,8 @@ void sflow_start(sflow_main_t *smp) {
       sfwk->smpN = smp->samplingN;
       sfwk->seed = thread_index;
       sfwk->skip = sflow_next_random_skip(sfwk);
-      if(sfwk->fifo == NULL) {
-	fifo_segment_create_args_t _a, *a = &_a;
-	clib_memset (a, 0, sizeof (*a));
-	// TODO: do we need separate name for each worker FIFO?
-	a->segment_name = "fifo-sflow-worker";
-	a->segment_size = SFLOW_FIFO_SIZE;
-	a->segment_type = SSVM_SEGMENT_PRIVATE;
-	// TODO: test return codes and print errors
-	fifo_segment_create(&sfwk->fsm, a);
-	sfwk->fs = fifo_segment_get_segment(&sfwk->fsm, a->new_segment_indices[0]);
-	// TODO: try to understand what these parameters mean
-	sfwk->fifo = fifo_segment_alloc_fifo_w_slice(sfwk->fs, 0, SFLOW_FIFO_SLICE, FIFO_SEGMENT_TX_FIFO);
-      }
-      
+      if(sfwk->fifo == NULL)
+	init_worker_fifo(sfwk);
       clib_warning("sflow startup: samplingN=%u thread=%u skip=%u",
 		   smp->samplingN,
 		   thread_index,
@@ -186,109 +231,43 @@ void sflow_start(sflow_main_t *smp) {
   /* Some per-thread numbers are maintained only in the main thread. */
   vec_validate (smp->main_per_thread_data, smp->total_threads);
 
-  /* open PSAMPLE netlink channel for writing */
+  /* open PSAMPLE netlink channel for writing packet samples */
   SFLOWPS_open(&smp->sflow_psample);
+  /* open USERSOCK netlink channel for writing counters */
+  SFLOWUS_open(&smp->sflow_usersock);
+  // TODO: decide on this:
+  smp->sflow_usersock.group_id = SFLOW_NETLINK_USERSOCK_MULTICAST;
 
-  /* establish shared memory coumter export. TODO: Since this is aimed at
-   * external programs like hsflowd maybe we should use only the most generic
-   * calls (see man shm_open) so that the other side sees exactly what it
-   * expects?
-   */
-
-#ifdef SFLOW_TRY_WITH_SSVM
-  if(smp->ssvm.ssvm_size == 0) {
-    // TODO: learn what these parameters mean.
-    smp->ssvm.ssvm_size = 2000000;
-    smp->ssvm.is_server = 1;
-    smp->ssvm.name = format(0, "%s%c", "vpp-sflow-counters", 0);
-    int rv = ssvm_server_init(&smp->ssvm, SSVM_SEGMENT_SHM);
-    clib_warning("ssvm_server_init() returned %d", rv);
-    if(rv == 0) {
-      smp->ssvm.sh->ready = 1;
-    }
-    // put some data into the shared memory area
-    uint64_t test_ctr_data[] = {
-      1, // version
-      10 * sizeof(uint64_t), // length
-      4,5,6,7,8,9,10,11,12,13 // numbers
-    };
-    u8 *test = ssvm_mem_alloc(&smp->ssvm, sizeof(test_ctr_data));
-    memcpy(test, test_ctr_data, sizeof(test_ctr_data));
-    // now it should be possible for hsflowd to read it from there?
-    // Nope - must have misunderstood something. Perhaps we can just
-    // use shm_open + mmap directly (see below)
-  }
-#else
-  if(smp->shmp == NULL) {
-    /* TODO: decide on permissions */
-    int fd = shm_open(SFLOW_SHM_PATH,
-		      O_CREAT | O_RDWR /* | O_EXCL */,
-		      S_IRUSR | S_IWUSR);
-    if(fd == -1) {
-      clib_warning("shm_open(%s) error: %s\n", SFLOW_SHM_PATH, strerror(errno));
-    }
-    else {
-      if(ftruncate(fd, SFLOW_SHM_SIZE) == -1) {
-	clib_warning("ftruncate(%s) error: %s\n", SFLOW_SHM_PATH, strerror(errno));
-	shm_unlink(SFLOW_SHM_PATH);
-      }
-      else {
-	// TODO: should we include MAP_HUGETLB|MAP_HUGE_2MB or does it not matter?
-	smp->shmp = mmap(NULL, SFLOW_SHM_SIZE,
-			 PROT_READ | PROT_WRITE,
-			 MAP_SHARED, fd, 0);
-	close(fd);
-	if(smp->shmp == MAP_FAILED) {
-	  clib_warning("mmap(%s) error: %s\n", SFLOW_SHM_PATH, strerror(errno));
-	  shm_unlink(SFLOW_SHM_PATH);
-	  // Clear ptr so we will try again if sflow is disabled then enabled.
-	  smp->shmp = NULL;
-	}
-	else {
-	  // Wipe, then initialize header.
-	  memset(smp->shmp, 0, SFLOW_SHM_SIZE);
-	  sflow_shm_hdr_t *hdr = &smp->shmp->hdr;
-	  sem_init(&hdr->sem, 1, 0);
-	  hdr->version = SFLOW_SHM_VERSION;
-	  hdr->ports = 0;
-	}
-      }
-    }
-  }
-#endif
-  
   /* fork sample-processing thread */
   pthread_attr_t attr;
   pthread_attr_init(&attr);
   pthread_attr_setstacksize(&attr, VLIB_THREAD_STACK_SIZE);
   pthread_create(&smp->spthread, &attr, spt_process_samples, smp);
+  
+  clib_warning("sflow_sampling_start done");
 }
-
-void sflow_stop(sflow_main_t *smp) {
-  clib_warning("sflow_stop");
+      
+static void sflow_sampling_stop(sflow_main_t *smp) {
+  clib_warning("sflow_sampling_stop");
   /* TODO: Setting smp->running to 0 should trigger clean exit from spthread
      so we can pthread_join() - but if it is blocked then this will
      never return so perhaps we should pthread_cancel() it instead? */
   smp->running = 0;
   SFLOWPS_close(&smp->sflow_psample);
-  if(smp->shmp) {
-    munmap(smp->shmp, SFLOW_SHM_SIZE);
-    shm_unlink(SFLOW_SHM_PATH);
-    smp->shmp = NULL;
-  }
+  SFLOWUS_close(&smp->sflow_usersock);
   //pthread_cancel(smp->spthread, NULL);
   pthread_join(smp->spthread, NULL);
-  clib_warning("sflow_stop_done");
+  clib_warning("sflow_sampling_stop_done");
 }
 
-void sflow_sampling_start_stop(sflow_main_t *smp) {
+static void sflow_sampling_start_stop(sflow_main_t *smp) {
   int run = (smp->samplingN != 0
 	     && smp->interfacesEnabled != 0);
   if(run != smp->running) {
     if(run)
-      sflow_start(smp);
+      sflow_sampling_start(smp);
     else
-      sflow_stop(smp);
+      sflow_sampling_stop(smp);
   }
 }
 
@@ -299,10 +278,16 @@ int sflow_sampling_rate (sflow_main_t * smp, u32 samplingN)
   return 0;
 }
 
+int sflow_polling_interval (sflow_main_t * smp, u32 pollingS)
+{
+  smp->pollingS = pollingS;
+  // TODO: reschedule ports?
+  return 0;
+}
+
 int sflow_enable_disable (sflow_main_t * smp, u32 sw_if_index, int enable_disable)
 {
   vnet_sw_interface_t * sw;
-  vnet_hw_interface_t * hw;
   
   /* Utterly wrong? */
   if (pool_is_free_index (smp->vnet_main->interface_main.sw_interfaces,
@@ -323,27 +308,22 @@ int sflow_enable_disable (sflow_main_t * smp, u32 sw_if_index, int enable_disabl
   for(int ii = 0; ii < VNET_N_MTU; ii++)
     clib_warning("mtu[%u]=%u\n", ii, sw->mtu[ii]);
 
-  hw = vnet_get_hw_interface(smp->vnet_main, sw->hw_if_index);
-  
-  u64 speed = hw->link_speed;
-  speed *= 1000; // TODO: or 1024?
-  clib_warning("hw interface name=%s speed=%llu\n", hw->name, speed);
   // note: vnet_hw_interface_t has uword *bond_info
   // (where 0=>none, ~0 => slave, other=>ptr to bitmap of slaves)
 
   vec_validate (smp->main_per_interface_data, sw->hw_if_index);
   sflow_main_per_interface_data_t *sfif = vec_elt_at_index(smp->main_per_interface_data, sw->hw_if_index);
   if(enable_disable == sfif->sflow_enabled) {
+    // redundant enable or disable
     // TODO: decide which error for (a) redundant enable and (b) redundant disable
     return VNET_API_ERROR_VALUE_EXIST;
   }
   else {
-    // OK, turn it on or off
+    // OK, turn it on/off
     sfif->sflow_enabled = enable_disable;
     vnet_feature_enable_disable ("device-input", "sflow", sw_if_index, enable_disable, 0, 0);
     smp->interfacesEnabled += (enable_disable) ? 1 : -1;
   }
-  
   
   sflow_sampling_start_stop(smp);
   return 0;
@@ -378,6 +358,40 @@ sflow_sampling_rate_command_fn (vlib_main_t * vm,
       break;
     default:
       return clib_error_return (0, "sflow_enable_disable returned %d",
+				rv);
+    }
+  return 0;
+}
+
+static clib_error_t *
+sflow_polling_interval_command_fn (vlib_main_t * vm,
+				   unformat_input_t * input,
+				   vlib_cli_command_t * cmd)
+{
+  sflow_main_t * smp = &sflow_main;
+  u32 polling_S = ~0;
+
+  int rv;
+
+  while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (input, "%u", &polling_S))
+	;
+      else
+        break;
+    }
+  
+  if (polling_S == ~0)
+    return clib_error_return (0, "Please specify a polling interval...");
+
+  rv = sflow_polling_interval (smp, polling_S);
+
+  switch(rv)
+    {
+    case 0:
+      break;
+    default:
+      return clib_error_return (0, "sflow_polling_interval returned %d",
 				rv);
     }
   return 0;
@@ -445,6 +459,13 @@ VLIB_CLI_COMMAND (sflow_sampling_rate_command, static) =
     .short_help = "sflow sampling-rate <N>",
     .function = sflow_sampling_rate_command_fn,
   };
+
+VLIB_CLI_COMMAND (sflow_polling_interval_command, static) =
+  {
+    .path = "sflow polling-interval",
+    .short_help = "sflow polling-interval <S>",
+    .function = sflow_polling_interval_command_fn,
+  };
 /* *INDENT-ON* */
 
 /* API message handler */
@@ -475,6 +496,19 @@ static void vl_api_sflow_sampling_rate_t_handler
   REPLY_MACRO(VL_API_SFLOW_SAMPLING_RATE_REPLY);
 }
 
+static void vl_api_sflow_polling_interval_t_handler
+(vl_api_sflow_polling_interval_t * mp)
+{
+  vl_api_sflow_polling_interval_reply_t * rmp;
+  sflow_main_t * smp = &sflow_main;
+  int rv;
+  
+  rv = sflow_polling_interval (smp,
+			       ntohl(mp->polling_S));
+  
+  REPLY_MACRO(VL_API_SFLOW_POLLING_INTERVAL_REPLY);
+}
+
 /* API definitions */
 #include <sflow/sflow.api.c>
 
@@ -486,15 +520,17 @@ static clib_error_t * sflow_init (vlib_main_t * vm)
   smp->vlib_main = vm;
   smp->vnet_main = vnet_get_main();
 
-  /* set default sampling-rate so that "enable" is all that is necessary */
+  /* set default sampling-rate and polling-interval so that "enable" is all that is necessary */
   smp->samplingN = SFLOW_DEFAULT_SAMPLING_N;
+  smp->pollingS = SFLOW_DEFAULT_POLLING_S;
+  
   /* TODO: make this a CLI parameter too */
   smp->header_bytes = SFLOW_DEFAULT_HEADER_BYTES;
 
   /* Add our API messages to the global name_crc hash table */
   smp->msg_id_base = setup_message_id_table ();
 
-  /* access to counters */
+  /* access to counters - TODO: should this only happen on sflow enable? */
   sflow_stat_segment_client_init();
   return error;
 }
