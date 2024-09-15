@@ -21,11 +21,6 @@
 #include <vppinfra/error.h>
 #include <sflow/sflow.h>
 
-// Using cpp flags to try different approaches:
-//#define SFLOW_SEND_FROM_WORKER 1
-//#define SFLOW_SEND_VIA_MAIN 1
-#define SFLOW_SEND_FIFO 1
-
 // different logging options
 //#define SFLOW_LOG_CYCLES 1
 //#define SFLOW_LOG_SAMPLES 1  // will add to cycles
@@ -81,66 +76,13 @@ typedef enum
   SFLOW_N_NEXT,
 } sflow_next_t;
 
-
+#ifdef SFLOW_LOG_CYCLES
+// TODO: there is a VPP library call for this
 static inline uint64_t get_cycles()
 {
   uint64_t t;
   __asm volatile ("rdtsc" : "=A"(t));
   return t;
-}
-
-#ifdef SFLOW_SEND_VIA_MAIN
-always_inline void sflow_send_sample(u8 *args) {
-  sflow_sample_t *sample = (sflow_sample_t *)args;
-  sflow_main_t * smp = &sflow_main;
-  SFLOWPSSpec spec = {};
-  u32 ps_group = 1;
-  u16 header_protocol = 1; /* ethernet */
-  /* keep my own copy of the latest sequence number for each thread. */
-  smp->main_per_thread_data[sample->thread_index].seqN = sample->thread_seqN;
-  smp->main_per_thread_data[sample->thread_index].drop = sample->thread_drop;
-  /* The sequence number we send to PSAMPLE is the unsigned sum of the
-   * sequence numbers last sent by each worker (which were incremented before
-   * any drops).  We add up the drops here too just as a sanity-check.
-   */
-  u32 sequence_no = 0;
-  // u32 drops = 0;
-  for(u32 thread_index = 0; thread_index < smp->total_threads; thread_index++) {
-    sflow_main_per_thread_data_t *sfmwk = vec_elt_at_index(smp->main_per_thread_data, thread_index);
-    sequence_no += sfmwk->seqN;
-    // drops += sfmwk->drop;
-  }
-
-  // clib_warning("sflow main thread global seqN=%u drops=%u", sequence_no, drops);
-  
-  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_SAMPLE_GROUP, ps_group);
-  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_IIFINDEX, sample->input_if_index);
-  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_OIFINDEX, sample->output_if_index);
-  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_ORIGSIZE, sample->sampled_packet_size);
-  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_GROUP_SEQ, sequence_no);
-  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_SAMPLE_RATE, sample->samplingN);
-  SFLOWPSSpec_setAttr(&spec, SFLOWPS_PSAMPLE_ATTR_DATA, sample->header, sample->header_bytes);
-  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_PROTO, header_protocol);
-  SFLOWPSSpec_send(&smp->sflow_psample, &spec);
-}
-#endif
-
-#ifdef SFLOW_SEND_FROM_WORKER
-always_inline void sflow_send_sample_from_worker(u8 *args) {
-  sflow_sample_t *sample = (sflow_sample_t *)args;
-  sflow_main_t * smp = &sflow_main;
-  SFLOWPSSpec spec = {};
-  u32 ps_group = 1024 + sample->thread_index;
-  u16 header_protocol = 1; /* ethernet */
-  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_SAMPLE_GROUP, ps_group);
-  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_IIFINDEX, sample->input_if_index);
-  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_OIFINDEX, sample->output_if_index);
-  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_ORIGSIZE, sample->sampled_packet_size);
-  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_GROUP_SEQ, sample->thread_seqN);
-  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_SAMPLE_RATE, sample->samplingN);
-  SFLOWPSSpec_setAttr(&spec, SFLOWPS_PSAMPLE_ATTR_DATA, sample->header, sample->header_bytes);
-  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_PROTO, header_protocol);
-  SFLOWPSSpec_send(&smp->sflow_psample, &spec);
 }
 #endif
 
@@ -178,7 +120,9 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
     // the Arista one "sflow enable GigabitEthernet0/8/0 dangerous 1"
     // so that 1:1 can still be set if you know what you are doing :)
     while(pkts > sfwk->skip) {
+#ifdef SFLOW_LOG_CYCLES
       uint64_t cycles1 = get_cycles();
+#endif
       /* reach in to get the one we want. */
       vlib_buffer_t *bN = vlib_get_buffer (vm, from[sfwk->skip]);
       /* Seems unlikely that prefetch is going to help here. */
@@ -218,64 +162,33 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
        * correctly at the receiving end to infer drops.
        */
       sfwk->seqN++;
-#ifdef SFLOW_SEND_VIA_MAIN
-      if(0 /*vec_len(vm->pending_rpc_requests) > SFLOW_MAX_FIFO_QUEUEDEPTH */) {
-	/* drop this sample. Limiting the depths of the RPC queue protects
-	 * the main thread from congestion or excess memory allocation. By
-	 * doing it here we can guard against the effect of an over-agressive
-	 * sampling_N setting, or an unexpected flash-flood. This is the
-	 * approximate analogue of a fixed-size hardware FIFO in a switching
-	 * ASIC.
-	 * Note that we don't even capture the spinlock before reading
-	 * vec_len(vm->pending_rpc_requests).  It's possible that this
-	 * 'dirty read' will give us the wrong answer sometimes if there is
-	 * race or reallocation,  but since the worst that can happen is that
-	 * we send one more or less sample then it doesn't seem worth the
-	 * trouble.
-	 */
-	sfwk->drop++;
-	pkts_dropped++;
-      }
-      else {
-#endif
-	sflow_sample_t sample = {
-	  .samplingN = sfwk->smpN,
-	  .input_if_index = if_index,
-	  .sampled_packet_size = bN->current_length + bN->total_length_not_including_first_buffer,
-	  .header_bytes = hdr,
-	  .thread_index = thread_index,
-	  .thread_seqN = sfwk->seqN,
-	  .thread_drop = sfwk->drop
-	};
-	pkts_sampled++;
-
-	//clib_warning("sflow hw if_index = %u, rpc_queue_depth=%u",
-	//		     hw->hw_if_index,
-	//		     vec_len(vm->pending_rpc_requests));
-	memcpy(sample.header, en, hdr);
-	// TODO: adjust size (though it might be just as fast to always copy 128 bytes)
-#ifdef SFLOW_SEND_VIA_MAIN
-	vl_api_rpc_call_main_thread(sflow_send_sample, (u8 *)&sample, sizeof(sample));
-      }
-#endif
+      sflow_sample_t sample = {
+	.samplingN = sfwk->smpN,
+	.input_if_index = if_index,
+	.sampled_packet_size = bN->current_length + bN->total_length_not_including_first_buffer,
+	.header_bytes = hdr,
+	.thread_index = thread_index,
+	.thread_seqN = sfwk->seqN,
+	.thread_drop = sfwk->drop
+      };
+      pkts_sampled++;
       
-#ifdef SFLOW_SEND_FROM_WORKER
-      sflow_send_sample_from_worker((u8 *)&sample);
-#endif
-
-#ifdef SFLOW_SEND_FIFO
+      //clib_warning("sflow hw if_index = %u, rpc_queue_depth=%u",
+      //		     hw->hw_if_index,
+      //		     vec_len(vm->pending_rpc_requests));
+      memcpy(sample.header, en, hdr);
+      // TODO: adjust size (though it might be just as fast to always copy 128 bytes)
+      
       svm_fifo_enqueue(sfwk->fifo, sizeof(sample), (u8 *)&sample);
-#endif
-
       
       pkts -= sfwk->skip;
       sfwk->pool += sfwk->skip;
       sfwk->skip = sflow_next_random_skip(sfwk);
-      uint64_t cycles2 = get_cycles();
 #ifdef SFLOW_LOG_CYCLES
+      uint64_t cycles2 = get_cycles();
       clib_warning("sample cycles = %u", (cycles2 - cycles1));
-#endif
       vlib_node_increment_counter (vm, sflow_node.index, SFLOW_ERROR_CYCLES, (cycles2-cycles1));
+#endif
     }
   }
 
