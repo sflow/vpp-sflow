@@ -68,6 +68,6 @@ bool SFLOWPS_close(SFLOWPS *pst);
 bool SFLOWPSSpec_setAttr(SFLOWPSSpec *spec, EnumSFLOWPSAttributes field, void *buf, int len);
 #define SFLOWPSSpec_setAttrInt(spec, field, val) SFLOWPSSpec_setAttr((spec), (field), &(val), sizeof(val))
 
-void SFLOWPSSpec_send(SFLOWPS *pst, SFLOWPSSpec *spec);
+int SFLOWPSSpec_send(SFLOWPS *pst, SFLOWPSSpec *spec);
 
 #endif  /* __included_sflow_psample_h__ */

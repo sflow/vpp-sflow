@@ -66,19 +66,6 @@ vlib_node_registration_t sflow_node;
 
 #endif /* CLIB_MARCH_VARIANT */
 
-#define foreach_sflow_error \
-  _ (PROCESSED, "sflow packets processed") \
-  _ (SAMPLED, "sflow packets sampled") \
-  _ (DROPPED, "sflow packets dropped") \
-  _ (CYCLES, "CPU cycles in sent samples")     /* SENT=SAMPLED-DROPPED */
-
-typedef enum {
-#define _(sym,str) SFLOW_ERROR_##sym,
-  foreach_sflow_error
-#undef _
-  SFLOW_N_ERROR,
-} sflow_error_t;
-
 #ifndef CLIB_MARCH_VARIANT
 static char * sflow_error_strings[] = 
 {

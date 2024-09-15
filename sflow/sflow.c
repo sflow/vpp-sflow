@@ -166,6 +166,7 @@ static void *spt_process_samples(void *ctx) {
       }
     }
     
+    u32 psample_send = 0, psample_send_fail = 0;
     nanosleep(&ts, NULL);
     
     for(u32 thread_index = 0; thread_index < smp->total_threads; thread_index++) {
@@ -184,9 +185,15 @@ static void *spt_process_samples(void *ctx) {
 	SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_SAMPLE_RATE, sample.samplingN);
 	SFLOWPSSpec_setAttr(&spec, SFLOWPS_PSAMPLE_ATTR_DATA, sample.header, sample.header_bytes);
 	SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_PROTO, header_protocol);
-	SFLOWPSSpec_send(&smp->sflow_psample, &spec);
+	psample_send++;
+	if (SFLOWPSSpec_send(&smp->sflow_psample, &spec) < 0)
+		psample_send_fail++;
       }
     }
+    if (psample_send>0)
+	vlib_node_increment_counter (smp->vlib_main, sflow_node.index, SFLOW_ERROR_PSAMPLE_SEND, psample_send);
+    if (psample_send_fail>0)
+	vlib_node_increment_counter (smp->vlib_main, sflow_node.index, SFLOW_ERROR_PSAMPLE_SEND_FAIL, psample_send_fail);
   }
   return NULL;
 }
