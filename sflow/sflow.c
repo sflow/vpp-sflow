@@ -51,7 +51,7 @@ sflow_stat_segment_client_init (void)
 }
 
 static void
-update_counter_vector_combined(sflow_main_t *smp, stat_segment_data_t *res, SFL_if_counters_t *ifCtrs, u32 hw_if_index) {
+update_counter_vector_combined(sflow_main_t *smp, stat_segment_data_t *res, sflow_counters_t *ifCtrs, u32 hw_if_index) {
   u8 *name = (u8 *)res->name;
   for (int th = 0; th < vec_len (res->simple_counter_vec); th++) {
     for (int intf = 0; intf < vec_len (res->combined_counter_vec[intf]); intf++) {
@@ -66,12 +66,12 @@ update_counter_vector_combined(sflow_main_t *smp, stat_segment_data_t *res, SFL_
 		     name, th, intf, byts);
 	// TODO: do we really have to look at the name string to know what it is?
 	if(strstr((char *)name, "/tx_")) {
-	  ifCtrs->ifOutUcastPkts += pkts;
-	  ifCtrs->ifOutOctets += byts;
+	  ifCtrs->tx.u_pkts += pkts;
+	  ifCtrs->tx.byts += byts;
 	}
 	if(strstr((char *)name, "/rx_")) {
-	  ifCtrs->ifInUcastPkts += pkts;
-	  ifCtrs->ifInOctets += byts;
+	  ifCtrs->rx.u_pkts += pkts;
+	  ifCtrs->rx.byts += byts;
 	}
       }
     }
@@ -80,13 +80,10 @@ update_counter_vector_combined(sflow_main_t *smp, stat_segment_data_t *res, SFL_
 
 static void update_counters(sflow_main_t *smp, sflow_main_per_interface_data_t *sfif) {
   vnet_hw_interface_t *hw = vnet_get_hw_interface(smp->vnet_main, sfif->hw_if_index);
-  // TODO: what is expected in patterns? This doesn't work:
-  u8 *patterns[] = { NULL, NULL };
-  patterns[0] = (u8 *)"interfaces";
   // This gives us a list of stat integers
   u32 *stats = stat_segment_ls(NULL);
   stat_segment_data_t *res = NULL;
-  // And we can grab a vector of stat_segment_data_t objects
+  // rab vector of stat_segment_data_t objects
  retry:
   res = stat_segment_dump (stats);
   if (res == NULL) {
@@ -96,17 +93,7 @@ static void update_counters(sflow_main_t *smp, sflow_main_per_interface_data_t *
     stats = stat_segment_ls (NULL);
     goto retry;
   }
-
-  u64 speed = hw->link_speed;
-  speed = (speed == ~0) ? 0 : (speed * 1000); // TODO or 1024?
-
-  SFL_if_counters_t ifCtrs = {
-    .ifIndex = sfif->hw_if_index,
-    .ifType = 6, // ethernetcsmacd
-    .ifSpeed = speed,
-    .ifStatus = SFLSTATUS_ADMIN_UP | SFLSTATUS_OPER_UP,
-    .ifDirection = 1, // full-duplex
-  };
+  sflow_counters_t ifCtrs = {};
   // and accumulate the (per-thread) entries for this interface
   for (int ii = 0; ii < vec_len (res); ii++) {
     switch (res[ii].type) {
@@ -137,21 +124,68 @@ static void update_counters(sflow_main_t *smp, sflow_main_per_interface_data_t *
   vec_free(stats);
   // send the structure via netlink
   SFLOWUSSpec spec = {};
-  SFLOWUSSpec_setAttrInt(&spec, SFLOWUS_ATTR_IFINDEX, sfif->hw_if_index);
   SFLOWUSSpec_setAttr(&spec, SFLOWUS_ATTR_PORTNAME, hw->name, strlen((char *)hw->name));
-  SFLOWUSSpec_setAttr(&spec, SFLOWUS_ATTR_COUNTERS_GENERIC, &ifCtrs, sizeof(ifCtrs));
+  SFLOWUSSpec_setAttrInt(&spec, SFLOWUS_ATTR_IFINDEX, sfif->hw_if_index);
+  
+  u64 speed = hw->link_speed;
+  u32 ifType = 6;
+  u8 ifDirection = 1;
+  u8 operUp = 1;
+  u8 adminUp = 1;
+  speed = (speed == ~0) ? 0 : (speed * 1000); // TODO: or * 1024?
+  SFLOWUSSpec_setAttrInt(&spec, SFLOWUS_ATTR_IFSPEED, speed);
+  SFLOWUSSpec_setAttrInt(&spec, SFLOWUS_ATTR_IFTYPE, ifType); // ethernet
+  SFLOWUSSpec_setAttrInt(&spec, SFLOWUS_ATTR_IFDIRECTION, ifDirection); // full-duplex
+  SFLOWUSSpec_setAttrInt(&spec, SFLOWUS_ATTR_OPER_UP, operUp);
+  SFLOWUSSpec_setAttrInt(&spec, SFLOWUS_ATTR_ADMIN_UP, adminUp);
+  SFLOWUSSpec_setAttrInt(&spec, SFLOWUS_ATTR_RX_OCTETS, ifCtrs.rx.byts);
+  SFLOWUSSpec_setAttrInt(&spec, SFLOWUS_ATTR_TX_OCTETS, ifCtrs.tx.byts);
+  SFLOWUSSpec_setAttrInt(&spec, SFLOWUS_ATTR_RX_UCASTS, ifCtrs.rx.u_pkts);
+  SFLOWUSSpec_setAttrInt(&spec, SFLOWUS_ATTR_TX_UCASTS, ifCtrs.tx.u_pkts);
+  // TODO: broadcasts, multicasts, errors and drops?
   SFLOWUSSpec_send(&smp->sflow_usersock, &spec);
 }
 
-/* Action function shared between message handler and debug CLI */
-static void *spt_process_samples(void *ctx) {
-  sflow_main_t *smp = (sflow_main_t *)ctx;
-  vlib_set_thread_name("sflow");
-  struct timespec ts = { .tv_sec = 0, .tv_nsec = 1000 };
-  
-  while(smp->running) {
+static uword
+sflow_process_samples(vlib_main_t *vm, vlib_node_runtime_t *node,
+		  vlib_frame_t *frame) {
+  sflow_main_t *smp = &sflow_main;
+
+  while(1) {
+
+    // We don't have anything for the main loop to edge-trigger on, so
+    // we are just asking to be called back regularly.  More regularly
+    // if sFlow is actually enabled...
+    f64 poll_wait_S = smp->running ? SFLOW_POLL_WAIT_S : 1.0;
+    vlib_process_wait_for_event_or_clock (vm, poll_wait_S);
+    if(!smp->running) {
+      // Nothing to do. Just yield again.
+      // Why not enable sFlow?
+      continue;
+    }
+
+#if SFLOW_CHECK_EVENTS
+    // We can call something like this if something goes wrong that we
+    // want to appear as an event here.
+    // vlib_process_signal_event (vlib_get_main (), sflow_process_samples_node.index, SFLOW_ERROR_PSAMPLE_SEND_FAIL, 0);
+    uword event_type;
+    uword *event_data = 0;
+    event_type = vlib_process_get_events (vm, &event_data);
+    vec_reset_length (event_data);
+    clib_warning("sflow_process_samples: got event_type==%u", event_type);
+    if (event_type == SFLOW_ERROR_PSAMPLE_SEND_FAIL) {
+      // Not sure there is anything we should do here, other than
+      // make the user aware?
+    }
+#endif
+    
+    // TODO: find how to get a monotonic clock in vpp? Perhaps
+    // truncate the clib_get_time() f64 value? (time_t)clib_get_time() ?
     struct timespec now_mono;
     clock_gettime (CLOCK_MONOTONIC, &now_mono);
+    // TODO: should we add a random 0-1000mS offset derived from
+    // something local like hostname, IP or UUID?  Or just allow
+    // hsflowd to take care of that kind of desynchronization?
     if(now_mono.tv_sec != smp->now_mono_S) {
       // second rollover
       smp->now_mono_S = now_mono.tv_sec;
@@ -165,38 +199,67 @@ static void *spt_process_samples(void *ctx) {
 	}
       }
     }
-    
-    u32 psample_send = 0, psample_send_fail = 0;
-    nanosleep(&ts, NULL);
-    
-    for(u32 thread_index = 0; thread_index < smp->total_threads; thread_index++) {
-      sflow_per_thread_data_t *sfwk = vec_elt_at_index(smp->per_thread_data, thread_index);
-      // TODO: dequeue and write multiple samples at a time
-      sflow_sample_t sample;
-      if(svm_fifo_dequeue(sfwk->fifo, sizeof(sflow_sample_t), (u8 *)&sample) == sizeof(sflow_sample_t)) {
-	SFLOWPSSpec spec = {};
-	u32 ps_group = 1; /* group==1 => ingress. Use group==2 for egress. */
-	u16 header_protocol = 1; /* ethernet */
-	SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_SAMPLE_GROUP, ps_group);
-	SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_IIFINDEX, sample.input_if_index);
-	SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_OIFINDEX, sample.output_if_index);
-	SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_ORIGSIZE, sample.sampled_packet_size);
-	SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_GROUP_SEQ, sample.thread_seqN);
-	SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_SAMPLE_RATE, sample.samplingN);
-	SFLOWPSSpec_setAttr(&spec, SFLOWPS_PSAMPLE_ATTR_DATA, sample.header, sample.header_bytes);
-	SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_PROTO, header_protocol);
-	psample_send++;
-	if (SFLOWPSSpec_send(&smp->sflow_psample, &spec) < 0)
-		psample_send_fail++;
+
+    // TODO: how many should we be prepared to read here?
+    // Our maximum samples/sec is approximately:
+    // (SFLOW_READ_BATCH * smp->total_threads) / SFLOW_POLL_WAIT_S
+    // but it may also be affected by SFLOW_FIFO_SIZE and SFLOW_MAX_HEADER_BYTES,
+    // and whether vlib_process_wait_for_event_or_clock() really waits for
+    // SFLOW_POLL_WAIT_S every time.
+    // If there are too many samples then dropping them as early as possible
+    // (and as randomly as possible) is preferred, so SFLOW_FIFO_SIZE should not
+    // be any bigger than it strictly needs to be. If there is a system bottleneck
+    // it could be in the PSAMPLE netlink channel, the hsflowd encoder, the
+    // UDP stack, the network path, the collector, or a faraway application.
+    // Any kind of "clipping" will result in systematic bias so we try to make
+    // this fair even when it's running hot. For example, we'll round-robin the
+    // thread FIFO dequeues here to avoid bias. Even though it might
+    // have been more efficient to drain each one in turn.
+    for(u32 batch = 0; batch < SFLOW_READ_BATCH; batch++) {
+      u32 psample_send = 0, psample_send_fail = 0;
+      for(u32 thread_index = 0; thread_index < smp->total_threads; thread_index++) {
+	sflow_per_thread_data_t *sfwk = vec_elt_at_index(smp->per_thread_data, thread_index);
+	// TODO: dequeue and write multiple samples at a time
+	sflow_sample_t sample;
+	if(svm_fifo_dequeue(sfwk->fifo, sizeof(sflow_sample_t), (u8 *)&sample) == sizeof(sflow_sample_t)) {
+	  SFLOWPSSpec spec = {};
+	  u32 ps_group = 1; /* group==1 => ingress. Use group==2 for egress. */
+	  // TODO: use groups 3 and 4 for VPP-psample? So hsflowd knows what it is getting?
+	  // TODO: is it always ethernet? (affects ifType counter as well)
+	  u16 header_protocol = 1; /* ethernet */
+	  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_SAMPLE_GROUP, ps_group);
+	  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_IIFINDEX, sample.input_if_index);
+	  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_OIFINDEX, sample.output_if_index);
+	  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_ORIGSIZE, sample.sampled_packet_size);
+	  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_GROUP_SEQ, sample.thread_seqN);
+	  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_SAMPLE_RATE, sample.samplingN);
+	  SFLOWPSSpec_setAttr(&spec, SFLOWPS_PSAMPLE_ATTR_DATA, sample.header, sample.header_bytes);
+	  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_PROTO, header_protocol);
+	  psample_send++;
+	  if (SFLOWPSSpec_send(&smp->sflow_psample, &spec) < 0)
+	    psample_send_fail++;
+	}
+      }
+      if(psample_send == 0) {
+	// nothing found on FIFOs this time through, so terminate batch early	
+	break;
+      }
+      else {
+	vlib_node_increment_counter (smp->vlib_main, sflow_node.index, SFLOW_ERROR_PSAMPLE_SEND, psample_send);
+	if (psample_send_fail>0)
+	  vlib_node_increment_counter (smp->vlib_main, sflow_node.index, SFLOW_ERROR_PSAMPLE_SEND_FAIL, psample_send_fail);
       }
     }
-    if (psample_send>0)
-	vlib_node_increment_counter (smp->vlib_main, sflow_node.index, SFLOW_ERROR_PSAMPLE_SEND, psample_send);
-    if (psample_send_fail>0)
-	vlib_node_increment_counter (smp->vlib_main, sflow_node.index, SFLOW_ERROR_PSAMPLE_SEND_FAIL, psample_send_fail);
   }
-  return NULL;
+  return 0;
 }
+
+VLIB_REGISTER_NODE (sflow_process_samples_node, static) = {
+  .function = sflow_process_samples,
+  .name = "sflow-process-samples",
+  .type = VLIB_NODE_TYPE_PROCESS,
+  .process_log2_n_stack_bytes = 17,
+};
 
 static void init_worker_fifo(sflow_per_thread_data_t *sfwk) {
   fifo_segment_create_args_t _a, *a = &_a;
@@ -242,28 +305,15 @@ static void sflow_sampling_start(sflow_main_t *smp) {
   SFLOWPS_open(&smp->sflow_psample);
   /* open USERSOCK netlink channel for writing counters */
   SFLOWUS_open(&smp->sflow_usersock);
-  // TODO: decide on this:
   smp->sflow_usersock.group_id = SFLOW_NETLINK_USERSOCK_MULTICAST;
-
-  /* fork sample-processing thread */
-  pthread_attr_t attr;
-  pthread_attr_init(&attr);
-  pthread_attr_setstacksize(&attr, VLIB_THREAD_STACK_SIZE);
-  pthread_create(&smp->spthread, &attr, spt_process_samples, smp);
-  
   clib_warning("sflow_sampling_start done");
 }
       
 static void sflow_sampling_stop(sflow_main_t *smp) {
   clib_warning("sflow_sampling_stop");
-  /* TODO: Setting smp->running to 0 should trigger clean exit from spthread
-     so we can pthread_join() - but if it is blocked then this will
-     never return so perhaps we should pthread_cancel() it instead? */
   smp->running = 0;
   SFLOWPS_close(&smp->sflow_psample);
   SFLOWUS_close(&smp->sflow_usersock);
-  //pthread_cancel(smp->spthread, NULL);
-  pthread_join(smp->spthread, NULL);
   clib_warning("sflow_sampling_stop_done");
 }
 

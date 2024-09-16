@@ -192,6 +192,11 @@ extern "C" {
 
     int status = sendmsg(ust->nl_sock, &msg, 0);
     // clib_warning("sendmsg returned %d\n", status);
-    if(status <= 0)
-      clib_warning("USERSOCK strerror(errno) = %s\n", strerror(errno));
+    if(status <= 0) {
+      // Linux replies with ECONNREFUSED when
+      // a multicast is sent via NETLINK_USERSOCK, but
+      // it's not an error so we can just ignore it here.
+      if(errno != ECONNREFUSED)
+	clib_warning("USERSOCK strerror(errno) = %s\n", strerror(errno));
+    }
   }

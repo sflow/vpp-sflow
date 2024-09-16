@@ -37,6 +37,8 @@
 #define SFLOW_MAX_HEADER_BYTES 256
 #define SFLOW_FIFO_SLICE 512
 #define SFLOW_FIFO_SIZE 4096 * SFLOW_FIFO_SLICE
+#define SFLOW_POLL_WAIT_S 0.001
+#define SFLOW_READ_BATCH 100
 
 #define foreach_sflow_error \
   _ (PROCESSED, "sflow packets processed") \
@@ -122,8 +124,7 @@ typedef struct {
   /* dropmon channel (packet drops) */
   // SFLOWDM sflow_dropmon;
   
-  /* sample-processing thread */
-  pthread_t spthread;
+  /* sample-processing */
   u32 now_mono_S;
 
   /* running control */
