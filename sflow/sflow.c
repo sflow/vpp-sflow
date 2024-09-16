@@ -150,6 +150,8 @@ static uword
 sflow_process_samples(vlib_main_t *vm, vlib_node_runtime_t *node,
 		  vlib_frame_t *frame) {
   sflow_main_t *smp = &sflow_main;
+  clib_time_t ctm;
+  clib_time_init(&ctm);
 
   while(1) {
 
@@ -178,17 +180,13 @@ sflow_process_samples(vlib_main_t *vm, vlib_node_runtime_t *node,
       // make the user aware?
     }
 #endif
-    
-    // TODO: find how to get a monotonic clock in vpp? Perhaps
-    // truncate the clib_get_time() f64 value? (time_t)clib_get_time() ?
-    struct timespec now_mono;
-    clock_gettime (CLOCK_MONOTONIC, &now_mono);
-    // TODO: should we add a random 0-1000mS offset derived from
-    // something local like hostname, IP or UUID?  Or just allow
-    // hsflowd to take care of that kind of desynchronization?
-    if(now_mono.tv_sec != smp->now_mono_S) {
+    // What we want is a monotonic, per-second clock. This seems to do it
+    // because it is based on the CPU clock.
+    f64 tnow = clib_time_now(&ctm);
+    u32 tnow_S = (u32)tnow;
+    if(tnow_S != smp->now_mono_S) {
       // second rollover
-      smp->now_mono_S = now_mono.tv_sec;
+      smp->now_mono_S = tnow_S;
       // see if we should poll one or more interfaces
       for(int ii = 0; ii < vec_len(smp->main_per_interface_data); ii++) {
 	sflow_main_per_interface_data_t *sfif = vec_elt_at_index(smp->main_per_interface_data, ii);
