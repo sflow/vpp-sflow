@@ -17,7 +17,6 @@ add_vpp_plugin(sflow
   sflow.c
   node.c
   sflow.h
-  sflow_shm.h
   sflow_psample.c
   sflow_psample.h
   sflow_psample_fields.h
