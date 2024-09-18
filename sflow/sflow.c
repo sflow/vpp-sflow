@@ -51,39 +51,84 @@ sflow_stat_segment_client_init (void)
 }
 
 static void
-update_counter_vector_combined(sflow_main_t *smp, stat_segment_data_t *res, sflow_counters_t *ifCtrs, u32 hw_if_index) {
-  u8 *name = (u8 *)res->name;
+update_counter_vector_simple (stat_segment_data_t *res, sflow_counters_t *ifCtrs, u32 hw_if_index) {
+  for (int th = 0; th < vec_len (res->simple_counter_vec); th++) {
+    for (int intf = 0; intf < vec_len (res->simple_counter_vec[th]); intf++) {
+      if(intf == hw_if_index) {
+	u64 count = res->simple_counter_vec[th][intf];
+	if(count) {
+	  clib_warning("%s{thread=\"%d\",interface=\"%d\"} %lld\n",
+		       res->name, th, intf, count);
+	  if(strcmp(res->name, "/if/rx-error") == 0)
+	    ifCtrs->rx.errs += count;
+	  else if(strcmp(res->name, "/if/tx-error") == 0)
+	    ifCtrs->tx.errs += count;
+	  else if(strcmp(res->name, "/if/drops") == 0)
+	    ifCtrs->tx.drps += count;
+	  else if(strcmp(res->name, "/if/rx-miss") == 0
+		  || strcmp(res->name, "/if/rx-no-buf") == 0)
+	    ifCtrs->rx.drps += count;
+	}
+      }
+    }
+  }
+}
+  
+static void
+update_counter_vector_combined(stat_segment_data_t *res, sflow_counters_t *ifCtrs, u32 hw_if_index) {
   for (int th = 0; th < vec_len (res->simple_counter_vec); th++) {
     for (int intf = 0; intf < vec_len (res->combined_counter_vec[intf]); intf++) {
-      if(intf != hw_if_index)
-	continue;
-      u64 pkts = res->combined_counter_vec[th][intf].packets;
-      u64 byts = res->combined_counter_vec[th][intf].bytes;
-      if(pkts || byts) {
-	clib_warning("%s_packets{thread=\"%d\",interface=\"%d\"} %lld\n",
-		     name, th, intf, pkts);
-	clib_warning("%s_bytes{thread=\"%d\",interface=\"%d\"} %lld\n",
-		     name, th, intf, byts);
-	// TODO: do we really have to look at the name string to know what it is?
-	if(strstr((char *)name, "/tx")) {
-	  ifCtrs->tx.u_pkts += pkts;
-	  ifCtrs->tx.byts += byts;
-	}
-	if(strstr((char *)name, "/rx")) {
-	  ifCtrs->rx.u_pkts += pkts;
-	  ifCtrs->rx.byts += byts;
+      if(intf == hw_if_index) {
+	u64 pkts = res->combined_counter_vec[th][intf].packets;
+	u64 byts = res->combined_counter_vec[th][intf].bytes;
+	if(pkts || byts) {
+	  clib_warning("%s_packets{thread=\"%d\",interface=\"%d\"} %lld\n",
+		       res->name, th, intf, pkts);
+	  clib_warning("%s_bytes{thread=\"%d\",interface=\"%d\"} %lld\n",
+		       res->name, th, intf, byts);
+	  if(strcmp(res->name, "/if/rx") == 0) {
+	    ifCtrs->rx.pkts += pkts;
+	    ifCtrs->rx.byts += byts;
+	  }
+	  else if(strcmp(res->name, "/if/tx") == 0) {
+	    ifCtrs->tx.byts += byts;	
+	    ifCtrs->tx.pkts += pkts;
+	  }
+	  // TODO: do multicasts include broadcasts, or are they counted separately?
+	  // (test with traffic)
+	  else if(strcmp(res->name, "/if/rx-multicast") == 0)
+	    ifCtrs->rx.m_pkts += pkts;
+	  else if(strcmp(res->name, "/if/tx-multicast") == 0)
+	    ifCtrs->tx.m_pkts += pkts;
+	  else if(strcmp(res->name, "/if/rx-broadcast") == 0)
+	    ifCtrs->rx.b_pkts += pkts;
+	  else if(strcmp(res->name, "/if/tx-broadcast") == 0)
+	    ifCtrs->tx.b_pkts += pkts;
 	}
       }
     }
   }
 }
 
+static int startsWith(u8 *str, char *prefix) {
+  if(str
+     && prefix) {
+    int len1 = strlen((char *)str);
+    int len2 = strlen(prefix);
+    if(len1 >= len2) {
+      return (memcmp(str, prefix, len2) == 0);
+    }
+  }
+  return false;
+}
+
 static void update_counters(sflow_main_t *smp, sflow_main_per_interface_data_t *sfif) {
+  vnet_sw_interface_t *sw = vnet_get_sw_interface(smp->vnet_main, sfif->sw_if_index);
   vnet_hw_interface_t *hw = vnet_get_hw_interface(smp->vnet_main, sfif->hw_if_index);
   // This gives us a list of stat integers
   u32 *stats = stat_segment_ls(NULL);
   stat_segment_data_t *res = NULL;
-  // rab vector of stat_segment_data_t objects
+  // read vector of stat_segment_data_t objects
  retry:
   res = stat_segment_dump (stats);
   if (res == NULL) {
@@ -98,25 +143,15 @@ static void update_counters(sflow_main_t *smp, sflow_main_per_interface_data_t *
   for (int ii = 0; ii < vec_len (res); ii++) {
     switch (res[ii].type) {
     case STAT_DIR_TYPE_COUNTER_VECTOR_SIMPLE:
-      // s = dump_counter_vector_simple (&res[ii], s, used_only);
-      //clib_warning("stat simple: %s\n", res[ii].name);
+      update_counter_vector_simple (&res[ii], &ifCtrs, sfif->hw_if_index);
       break;
     case STAT_DIR_TYPE_COUNTER_VECTOR_COMBINED:
-      // clib_warning("stat combined: %s\n", res[ii].name);
-      update_counter_vector_combined (smp, &res[ii], &ifCtrs, sfif->hw_if_index);
+      update_counter_vector_combined (&res[ii], &ifCtrs, sfif->hw_if_index);
       break;
     case STAT_DIR_TYPE_SCALAR_INDEX:
-      //clib_warning("stat scalar: %s\n", res[ii].name);
-      //s = dump_scalar_index (&res[ii], s, used_only);
-      break;
     case STAT_DIR_TYPE_NAME_VECTOR:
-      //clib_warning("stat name_vector: %s\n", res[ii].name);
-      //s = dump_name_vector (&res[ii], s, used_only);
-      break;
     case STAT_DIR_TYPE_EMPTY:
-      break;
     default:
-      clib_warning ("Unknown value %d\n", res[ii].type);
       break;
     }
   }
@@ -124,26 +159,47 @@ static void update_counters(sflow_main_t *smp, sflow_main_per_interface_data_t *
   vec_free(stats);
   // send the structure via netlink
   SFLOWUSSpec spec = {};
-  SFLOWUSSpec_setMsgType(&spec, SFLOWUS_IF_COUNTERS);
-  SFLOWUSSpec_setAttr(&spec, SFLOWUS_ATTR_PORTNAME, hw->name, strlen((char *)hw->name));
-  SFLOWUSSpec_setAttrInt(&spec, SFLOWUS_ATTR_IFINDEX, sfif->hw_if_index);
+  SFLOWUSSpec_setMsgType(&spec, SFLOW_VPP_MSG_IF_COUNTERS);
+  SFLOWUSSpec_setAttr(&spec, SFLOW_VPP_ATTR_PORTNAME, hw->name, strlen((char *)hw->name));
+  SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_IFINDEX, sfif->hw_if_index);
   
-  u64 speed = hw->link_speed;
-  u32 ifType = 6;
-  u8 ifDirection = 1;
-  u8 operUp = 1;
-  u8 adminUp = 1;
-  speed = (speed == ~0) ? 0 : (speed * 1000); // TODO: or * 1024?
-  SFLOWUSSpec_setAttrInt(&spec, SFLOWUS_ATTR_IFSPEED, speed);
-  SFLOWUSSpec_setAttrInt(&spec, SFLOWUS_ATTR_IFTYPE, ifType); // ethernet
-  SFLOWUSSpec_setAttrInt(&spec, SFLOWUS_ATTR_IFDIRECTION, ifDirection); // full-duplex
-  SFLOWUSSpec_setAttrInt(&spec, SFLOWUS_ATTR_OPER_UP, operUp);
-  SFLOWUSSpec_setAttrInt(&spec, SFLOWUS_ATTR_ADMIN_UP, adminUp);
-  SFLOWUSSpec_setAttrInt(&spec, SFLOWUS_ATTR_RX_OCTETS, ifCtrs.rx.byts);
-  SFLOWUSSpec_setAttrInt(&spec, SFLOWUS_ATTR_TX_OCTETS, ifCtrs.tx.byts);
-  SFLOWUSSpec_setAttrInt(&spec, SFLOWUS_ATTR_RX_UCASTS, ifCtrs.rx.u_pkts);
-  SFLOWUSSpec_setAttrInt(&spec, SFLOWUS_ATTR_TX_UCASTS, ifCtrs.tx.u_pkts);
-  // TODO: broadcasts, multicasts, errors and drops?
+  // Report consistent with vpp-snmp-agent
+  u64 ifSpeed = (hw->link_speed == ~0)
+    ? 0
+    : (hw->link_speed * 1000);
+  if(startsWith(hw->name, "loop")
+     || startsWith(hw->name, "tap"))
+    ifSpeed = 1e9;
+    
+  u32 ifType = startsWith(hw->name, "loop")
+    ? 24 // softwareLoopback
+    : 6; // ethernetCsmacd
+
+  u32 ifDirection = (hw->flags & VNET_HW_INTERFACE_FLAG_HALF_DUPLEX)
+    ? 2 // half-duplex
+    : 1; // full-duplex
+
+  u32 operUp = (hw->flags & VNET_HW_INTERFACE_FLAG_LINK_UP) ? 1 : 0;
+  u32 adminUp = (sw->flags & VNET_SW_INTERFACE_FLAG_ADMIN_UP) ? 1 : 0;
+
+  SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_IFSPEED, ifSpeed);
+  SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_IFTYPE, ifType);
+  SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_IFDIRECTION, ifDirection);
+  SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_OPER_UP, operUp);
+  SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_ADMIN_UP, adminUp);
+  SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_RX_OCTETS, ifCtrs.rx.byts);
+  SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_TX_OCTETS, ifCtrs.tx.byts);
+  SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_RX_PKTS, ifCtrs.rx.pkts);
+  SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_TX_PKTS, ifCtrs.tx.pkts);
+  SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_RX_MCASTS, ifCtrs.rx.m_pkts);
+  SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_TX_MCASTS, ifCtrs.tx.m_pkts);
+  SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_RX_BCASTS, ifCtrs.rx.b_pkts);
+  SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_TX_BCASTS, ifCtrs.tx.b_pkts);
+  SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_RX_ERRORS, ifCtrs.rx.errs);
+  SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_TX_ERRORS, ifCtrs.tx.errs);
+  SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_RX_DISCARDS, ifCtrs.rx.drps);
+  SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_TX_DISCARDS, ifCtrs.tx.drps);
+  SFLOWUSSpec_setAttr(&spec, SFLOW_VPP_ATTR_HW_ADDRESS, hw->hw_address, vec_len(hw->hw_address));
   SFLOWUSSpec_send(&smp->sflow_usersock, &spec);
 }
 
@@ -190,8 +246,9 @@ sflow_process_samples(vlib_main_t *vm, vlib_node_runtime_t *node,
       smp->now_mono_S = tnow_S;
       // send status info
       SFLOWUSSpec spec = {};
-      SFLOWUSSpec_setMsgType(&spec, SFLOWUS_STATUS);
-      // TODO: report the performance counters here
+      SFLOWUSSpec_setMsgType(&spec, SFLOW_VPP_MSG_STATUS);
+      SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_UPTIME_S, smp->now_mono_S);
+      // TODO: report other performance counters here, such as worker FIFO enqueue failures
       SFLOWUSSpec_send(&smp->sflow_usersock, &spec);
       // see if we should poll one or more interfaces
       for(int ii = 0; ii < vec_len(smp->main_per_interface_data); ii++) {
@@ -281,6 +338,11 @@ static void init_worker_fifo(sflow_per_thread_data_t *sfwk) {
 static void sflow_sampling_start(sflow_main_t *smp) {
   clib_warning("sflow_sampling_start");
   smp->running = 1;
+  // Reset this clock so that the per-second netlink status updates
+  // will communicate a restart to hsflowd.  This helps to distinguish:
+  // (1) vpp restarted with sFlow off => no status updates (went quiet)
+  // (2) vpp restarted with default sFlow => status updates (starting again from 0)
+  smp->now_mono_S = 0;
 
   /* set up (or reset) sampling context for each thread */
   vlib_thread_main_t *tm = &vlib_thread_main;
@@ -380,6 +442,7 @@ int sflow_enable_disable (sflow_main_t * smp, u32 sw_if_index, int enable_disabl
   }
   else {
     // OK, turn it on/off
+    sfif->sw_if_index = sw_if_index;
     sfif->hw_if_index = sw->hw_if_index;
     sfif->sflow_enabled = enable_disable;
     vnet_feature_enable_disable ("device-input", "sflow", sw_if_index, enable_disable, 0, 0);

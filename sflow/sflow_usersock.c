@@ -124,7 +124,7 @@ extern "C" {
     -----------------___________________________------------------
   */
   
-  bool SFLOWUSSpec_setMsgType(SFLOWUSSpec *spec, EnumSFLOWUSMsgType msgType) {
+  bool SFLOWUSSpec_setMsgType(SFLOWUSSpec *spec, EnumSFlowVppMsgType msgType) {
     spec->nlh.nlmsg_type = msgType;
     return true;
   }
@@ -134,15 +134,11 @@ extern "C" {
     -----------------___________________________------------------
   */
   
-  bool SFLOWUSSpec_setAttr(SFLOWUSSpec *spec, EnumSFLOWUSAttributes field, void *val, int len) {
+  bool SFLOWUSSpec_setAttr(SFLOWUSSpec *spec, EnumSFlowVppAttributes field, void *val, int len) {
     SFLOWUSAttr *usa = &spec->attr[field];
     if(usa->included)
       return false;
     usa->included = true;
-    int expected_len = SFLOWUS_Fields[field].len;
-    if(expected_len
-       && expected_len != len)
-      return false;
     usa->attr.nla_type = field;
     usa->attr.nla_len = sizeof(usa->attr) + len;
     int len_w_pad = NLMSG_ALIGN(len);
@@ -165,7 +161,7 @@ extern "C" {
     spec->nlh.nlmsg_seq = ++ust->nl_seq;
     spec->nlh.nlmsg_pid = getpid();
 
-#define MAX_IOV_FRAGMENTS (2 * __SFLOWUS_ATTR_MAX) + 2
+#define MAX_IOV_FRAGMENTS (2 * __SFLOW_VPP_ATTR_MAX) + 2
 
     struct iovec iov[MAX_IOV_FRAGMENTS];
     u32 frag = 0;
@@ -173,7 +169,7 @@ extern "C" {
     iov[frag].iov_len = sizeof(spec->nlh);
     frag++;
     int nn = 0;
-    for(u32 ii = 0; ii < __SFLOWUS_ATTR_MAX; ii++) {
+    for(u32 ii = 0; ii < __SFLOW_VPP_ATTR_MAX; ii++) {
       SFLOWUSAttr *usa = &spec->attr[ii];
       if(usa->included) {
 	nn++;

@@ -22,7 +22,6 @@ add_vpp_plugin(sflow
   sflow_psample_fields.h
   sflow_usersock.c
   sflow_usersock.h
-  sflow_usersock_fields.h
 
   MULTIARCH_SOURCES
   node.c

@@ -96,6 +96,7 @@ typedef struct {
 /* private to main thread
    TODO: assuming polling is also moved to main thread */
 typedef struct {
+  u32 sw_if_index;
   u32 hw_if_index;
   int sflow_enabled;
   // TODO: possibly keep cache of counter index numbers here?
