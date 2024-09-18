@@ -120,6 +120,16 @@ extern "C" {
   }
 
   /*_________________---------------------------__________________
+    _________________  SFLOWUSSpec_setMsgType   __________________
+    -----------------___________________________------------------
+  */
+  
+  bool SFLOWUSSpec_setMsgType(SFLOWUSSpec *spec, EnumSFLOWUSMsgType msgType) {
+    spec->nlh.nlmsg_type = msgType;
+    return true;
+  }
+
+  /*_________________---------------------------__________________
     _________________    SFLOWUSSpec_setAttr    __________________
     -----------------___________________________------------------
   */
@@ -152,7 +162,6 @@ extern "C" {
   void SFLOWUSSpec_send(SFLOWUS *ust, SFLOWUSSpec *spec) {
     spec->nlh.nlmsg_len = NLMSG_LENGTH(spec->attrs_len);
     spec->nlh.nlmsg_flags = 0;
-    spec->nlh.nlmsg_type = 0; // TODO: what goes here?
     spec->nlh.nlmsg_seq = ++ust->nl_seq;
     spec->nlh.nlmsg_pid = getpid();
 

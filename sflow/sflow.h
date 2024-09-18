@@ -40,6 +40,11 @@
 #define SFLOW_POLL_WAIT_S 0.001
 #define SFLOW_READ_BATCH 100
 
+// use PSAMPLE group number to distinguish VPP samples from others
+// (so that hsflowd will know to remap the ifIndex numbers if necessary)
+#define SFLOW_VPP_PSAMPLE_GROUP_INGRESS 3
+#define SFLOW_VPP_PSAMPLE_GROUP_EGRESS 4
+
 #define foreach_sflow_error \
   _ (PROCESSED, "sflow packets processed") \
   _ (SAMPLED, "sflow packets sampled") \

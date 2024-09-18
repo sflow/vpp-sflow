@@ -14,6 +14,12 @@
 #include <signal.h>
 #include <ctype.h>
 
+typedef enum {
+  SFLOWUS_STATUS=1,
+  SFLOWUS_IF_COUNTERS
+  /* shared with hsflowd so only add here */
+} EnumSFLOWUSMsgType;
+
 typedef struct {
   u64 byts;
   u64 u_pkts;
@@ -72,6 +78,7 @@ typedef struct _SFLOWUSSpec {
 bool SFLOWUS_open(SFLOWUS *ust);
 bool SFLOWUS_close(SFLOWUS *ust);
 
+bool SFLOWUSSpec_setMsgType(SFLOWUSSpec *spec, EnumSFLOWUSMsgType type);
 bool SFLOWUSSpec_setAttr(SFLOWUSSpec *spec, EnumSFLOWUSAttributes field, void *buf, int len);
 #define SFLOWUSSpec_setAttrInt(spec, field, val) SFLOWUSSpec_setAttr((spec), (field), &(val), sizeof(val))
 

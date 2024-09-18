@@ -65,11 +65,11 @@ update_counter_vector_combined(sflow_main_t *smp, stat_segment_data_t *res, sflo
 	clib_warning("%s_bytes{thread=\"%d\",interface=\"%d\"} %lld\n",
 		     name, th, intf, byts);
 	// TODO: do we really have to look at the name string to know what it is?
-	if(strstr((char *)name, "/tx_")) {
+	if(strstr((char *)name, "/tx")) {
 	  ifCtrs->tx.u_pkts += pkts;
 	  ifCtrs->tx.byts += byts;
 	}
-	if(strstr((char *)name, "/rx_")) {
+	if(strstr((char *)name, "/rx")) {
 	  ifCtrs->rx.u_pkts += pkts;
 	  ifCtrs->rx.byts += byts;
 	}
@@ -124,6 +124,7 @@ static void update_counters(sflow_main_t *smp, sflow_main_per_interface_data_t *
   vec_free(stats);
   // send the structure via netlink
   SFLOWUSSpec spec = {};
+  SFLOWUSSpec_setMsgType(&spec, SFLOWUS_IF_COUNTERS);
   SFLOWUSSpec_setAttr(&spec, SFLOWUS_ATTR_PORTNAME, hw->name, strlen((char *)hw->name));
   SFLOWUSSpec_setAttrInt(&spec, SFLOWUS_ATTR_IFINDEX, sfif->hw_if_index);
   
@@ -187,6 +188,11 @@ sflow_process_samples(vlib_main_t *vm, vlib_node_runtime_t *node,
     if(tnow_S != smp->now_mono_S) {
       // second rollover
       smp->now_mono_S = tnow_S;
+      // send status info
+      SFLOWUSSpec spec = {};
+      SFLOWUSSpec_setMsgType(&spec, SFLOWUS_STATUS);
+      // TODO: report the performance counters here
+      SFLOWUSSpec_send(&smp->sflow_usersock, &spec);
       // see if we should poll one or more interfaces
       for(int ii = 0; ii < vec_len(smp->main_per_interface_data); ii++) {
 	sflow_main_per_interface_data_t *sfif = vec_elt_at_index(smp->main_per_interface_data, ii);
@@ -221,8 +227,7 @@ sflow_process_samples(vlib_main_t *vm, vlib_node_runtime_t *node,
 	sflow_sample_t sample;
 	if(svm_fifo_dequeue(sfwk->fifo, sizeof(sflow_sample_t), (u8 *)&sample) == sizeof(sflow_sample_t)) {
 	  SFLOWPSSpec spec = {};
-	  u32 ps_group = 1; /* group==1 => ingress. Use group==2 for egress. */
-	  // TODO: use groups 3 and 4 for VPP-psample? So hsflowd knows what it is getting?
+	  u32 ps_group = SFLOW_VPP_PSAMPLE_GROUP_INGRESS;
 	  // TODO: is it always ethernet? (affects ifType counter as well)
 	  u16 header_protocol = 1; /* ethernet */
 	  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_SAMPLE_GROUP, ps_group);
@@ -375,6 +380,7 @@ int sflow_enable_disable (sflow_main_t * smp, u32 sw_if_index, int enable_disabl
   }
   else {
     // OK, turn it on/off
+    sfif->hw_if_index = sw->hw_if_index;
     sfif->sflow_enabled = enable_disable;
     vnet_feature_enable_disable ("device-input", "sflow", sw_if_index, enable_disable, 0, 0);
     smp->interfacesEnabled += (enable_disable) ? 1 : -1;
