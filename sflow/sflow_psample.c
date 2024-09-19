@@ -68,6 +68,28 @@ extern "C" {
     }
   }
 
+  static int setSendBuffer(int fd, int requested) {
+    int txbuf=0;
+    socklen_t txbufsiz = sizeof(txbuf);
+    if(getsockopt(fd, SOL_SOCKET, SO_SNDBUF, &txbuf, &txbufsiz) < 0) {
+      clib_warning("getsockopt(SO_SNDBUF) failed: %s", strerror(errno));
+    }
+    clib_warning("socket buffer current=%d", txbuf);
+    if(txbuf < requested) {
+      txbuf = requested;
+      if(setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &txbuf, sizeof(txbuf)) < 0) {
+        clib_warning("setsockopt(SO_TXBUF=%d) failed: %s", requested, strerror(errno));
+      }
+      // see what we actually got
+      txbufsiz = sizeof(txbuf);
+      if(getsockopt(fd, SOL_SOCKET, SO_SNDBUF, &txbuf, &txbufsiz) < 0) {
+        clib_warning("getsockopt(SO_SNDBUF) failed: %s", strerror(errno));
+      }
+      clib_warning("socket buffer requested=%d received=%d", requested, txbuf);
+    }
+    return txbuf;
+  }
+
   /*_________________---------------------------__________________
     _________________        generic_pid        __________________
     -----------------___________________________------------------
@@ -135,59 +157,6 @@ extern "C" {
     return sendmsg(sockfd, &msg, 0);
   }
 
-  #if 0
-  /*_________________---------------------------__________________
-    _________________        usersock_open      __________________
-    -----------------___________________________------------------
-  */
-
-  static int usersock_open(u32 mod_id) {
-    int nl_sock = socket(AF_NETLINK, SOCK_RAW, NETLINK_USERSOCK);
-    if(nl_sock < 0) {
-      clib_warning("nl_sock open failed: %s\n", strerror(errno));
-      return -1;
-    }
-    // bind to a suitable id
-    struct sockaddr_nl sa = { .nl_family = AF_NETLINK,
-      .nl_pid = mod_id };
-    if(bind(nl_sock, (struct sockaddr *)&sa, sizeof(sa)) < 0)
-      clib_warning("usersock_open: bind failed: %s\n", strerror(errno));
-    setNonBlocking(nl_sock);
-    setCloseOnExec(nl_sock);
-    return nl_sock;
-  }
-
-  /*_________________---------------------------__________________
-    _________________     usersock_send         __________________
-    -----------------___________________________------------------
-  */
-  
-  static int usersock_send(int sockfd, u32 mod_id, int type, int cmd, int req_type, void *req, int req_len, u32 seqNo) {
-    struct nlmsghdr nlh = { };
-    struct nlattr attr = { };
-    int req_footprint = NLMSG_ALIGN(req_len);
-
-    attr.nla_len = sizeof(attr) + req_len;
-    attr.nla_type = req_type;
-
-    nlh.nlmsg_len = NLMSG_LENGTH(req_footprint + sizeof(attr));
-    nlh.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
-    nlh.nlmsg_type = type;
-    nlh.nlmsg_seq = seqNo;
-    nlh.nlmsg_pid = mod_id;
-
-    struct iovec iov[4] = {
-      { .iov_base = &nlh,  .iov_len = sizeof(nlh) },
-      { .iov_base = &attr, .iov_len = sizeof(attr) },
-      { .iov_base = req,   .iov_len = req_footprint }
-    };
-
-    struct sockaddr_nl sa = { .nl_family = AF_NETLINK };
-    struct msghdr msg = { .msg_name = &sa, .msg_namelen = sizeof(sa), .msg_iov = iov, .msg_iovlen = 3 };
-    return sendmsg(sockfd, &msg, 0);
-  }
-#endif
-
   /*_________________---------------------------__________________
     _________________    getFamily_PSAMPLE      __________________
     -----------------___________________________------------------
@@ -204,6 +173,7 @@ extern "C" {
 		 PSAMPLE_GENL_NAME,
 		 sizeof(PSAMPLE_GENL_NAME)+1,
 		 ++pst->nl_seq);
+    pst->state = SFLOWPS_STATE_WAIT_FAMILY;
   }
 
   /*_________________---------------------------__________________
@@ -232,7 +202,7 @@ extern "C" {
 	break;
       case CTRL_ATTR_FAMILY_ID:
 	pst->family_id = *(u16 *)attr_datap;
-	clib_warning("generic family id: %u\n", pst->family_id); 
+	clib_warning("generic family id: %u\n", pst->family_id);
 	break;
       case CTRL_ATTR_FAMILY_NAME:
 	clib_warning("generic family name: %s\n", attr_datap); 
@@ -287,6 +257,11 @@ extern "C" {
       }
       offset += NLMSG_ALIGN(attr->nla_len);
     }
+    if(pst->family_id
+       && pst->group_id) {
+      clib_warning("psample state->READY\n");
+      pst->state = SFLOWPS_STATE_READY;
+    }
   }
 
   // TODO: we can take out the fns for reading PSAMPLE here
@@ -311,74 +286,32 @@ extern "C" {
     -----------------___________________________------------------
   */
 
-#define SFLOWPS_PSAMPLE_READNL_RCV_BUF 8192
-#define SFLOWPS_PSAMPLE_READNL_BATCH 10
-  
   static void readNetlink_PSAMPLE(SFLOWPS *pst, int fd)
   {
     uint8_t recv_buf[SFLOWPS_PSAMPLE_READNL_RCV_BUF];
-    int batch = 0;
-    for( ; batch < SFLOWPS_PSAMPLE_READNL_BATCH; batch++) {
-      int numbytes = recv(fd, recv_buf, sizeof(recv_buf), 0);
-      if(numbytes <= 0)
+    int numbytes = recv(fd, recv_buf, sizeof(recv_buf), 0);
+    if(numbytes <= 0) {
+      clib_warning("readNetlink_PSAMPLE returned %d : %s\n", numbytes, strerror(errno));
+      return;
+    }
+    struct nlmsghdr *nlh = (struct nlmsghdr*) recv_buf;
+    while(NLMSG_OK(nlh, numbytes)){
+      if(nlh->nlmsg_type == NLMSG_DONE)
 	break;
-      struct nlmsghdr *nlh = (struct nlmsghdr*) recv_buf;
-      while(NLMSG_OK(nlh, numbytes)){
-	if(nlh->nlmsg_type == NLMSG_DONE)
-	  break;
-	if(nlh->nlmsg_type == NLMSG_ERROR){
-	  struct nlmsgerr *err_msg = (struct nlmsgerr *)NLMSG_DATA(nlh);
-	  if(err_msg->error == 0) {
-	    clib_warning("received Netlink ACK\n");
-	  }
-	  else {
-	    // TODO: parse NLMSGERR_ATTR_OFFS to get offset?  Might be helpful
-	    clib_warning("error in netlink message: %d : %s\n",
-			 err_msg->error,
-			 strerror(-err_msg->error));
-	  }
-	  break;
+      if(nlh->nlmsg_type == NLMSG_ERROR){
+	struct nlmsgerr *err_msg = (struct nlmsgerr *)NLMSG_DATA(nlh);
+	if(err_msg->error == 0) {
+	  clib_warning("received Netlink ACK\n");
 	}
-	processNetlink(pst, nlh);
-	nlh = NLMSG_NEXT(nlh, numbytes);
+	else {
+	  clib_warning("error in netlink message: %d : %s\n",
+		       err_msg->error,
+		       strerror(-err_msg->error));
+	}
+	return;
       }
-    }
-  }
-
-  /*_________________---------------------------__________________
-    _________________       socketRead          __________________
-    -----------------___________________________------------------
-  */
-
-  typedef void (*SFLOWPSReadCB)(SFLOWPS *pst, int sock);
-
-  static void socketRead(SFLOWPS *pst, u32 select_mS, SFLOWPSReadCB readCB) {
-    fd_set readfds;
-    FD_ZERO(&readfds);
-    sigset_t emptyset;
-    sigemptyset(&emptyset);
-    FD_SET(pst->nl_sock, &readfds);
-    int max_fd = pst->nl_sock;
-    struct timespec timeout;
-    timeout.tv_sec = 0;
-    timeout.tv_nsec = select_mS * 1000000;
-    int nfds = pselect(max_fd + 1,
-		       &readfds,
-		       (fd_set *)NULL,
-		       (fd_set *)NULL,
-		       &timeout,
-		       &emptyset);
-    // see if we got anything
-    if(nfds > 0) {
-      if(FD_ISSET(pst->nl_sock, &readfds))
-	(*readCB)(pst, pst->nl_sock);
-    }
-    else if(nfds < 0) {
-      // may return prematurely if a signal was caught, in which case nfds will be
-      // -1 and errno will be set to EINTR.  If we get any other error, bail.
-      if(errno != EINTR) {
-	clib_warning("pselect() returned %d : %s\n", nfds, strerror(errno));
-      }
+      processNetlink(pst, nlh);
+      nlh = NLMSG_NEXT(nlh, numbytes);
     }
   }
 
@@ -391,14 +324,13 @@ extern "C" {
   bool SFLOWPS_open(SFLOWPS *pst) {
     if(pst->nl_sock == 0) {
       pst->nl_sock = generic_open(pst->id);
-      getFamily_PSAMPLE(pst);
-      socketRead(pst, 500, readNetlink_PSAMPLE);
-      if(pst->family_id == 0) {
-	clib_warning("failed to get PSAMPLE family id\n");
-	return false;
+      if(pst->nl_sock > 0) {
+	pst->state = SFLOWPS_STATE_OPEN;
+	setSendBuffer(pst->nl_sock, SFLOWPS_PSAMPLE_READNL_SND_BUF);
+	getFamily_PSAMPLE(pst);
       }
     }
-    return true;
+    return (pst->nl_sock > 0);
   }
 
   /*_________________---------------------------__________________
@@ -407,7 +339,7 @@ extern "C" {
   */
   
   bool SFLOWPS_close(SFLOWPS *pst) {
-    if(pst->nl_sock != 0) {
+    if(pst->nl_sock > 0) {
       int err = close(pst->nl_sock);
       if(err == 0) {
 	pst->nl_sock = 0;
@@ -421,6 +353,37 @@ extern "C" {
   }
 
   /*_________________---------------------------__________________
+    _________________       SFLOWPS_state       __________________
+    -----------------___________________________------------------
+  */
+  
+  EnumSFLOWPSState SFLOWPS_state(SFLOWPS *pst) {
+    return pst->state;
+  }
+
+  /*_________________---------------------------__________________
+    _________________    SFLOWPS_open_step      __________________
+    -----------------___________________________------------------
+  */
+  
+  EnumSFLOWPSState SFLOWPS_open_step(SFLOWPS *pst) {
+    switch(pst->state) {
+    case SFLOWPS_STATE_INIT:
+      SFLOWPS_open(pst);
+      break;
+    case SFLOWPS_STATE_OPEN:
+      getFamily_PSAMPLE(pst);
+      break;
+    case SFLOWPS_STATE_WAIT_FAMILY:
+      readNetlink_PSAMPLE(pst, pst->nl_sock);
+      break;
+    case SFLOWPS_STATE_READY:
+      break;
+    }
+    return pst->state;
+  }
+  
+  /*_________________---------------------------__________________
     _________________    SFLOWPSSpec_setAttr    __________________
     -----------------___________________________------------------
   */
@@ -432,8 +395,13 @@ extern "C" {
     psa->included = true;
     int expected_len = SFLOWPS_Fields[field].len;
     if(expected_len
-       && expected_len != len)
+       && expected_len != len) {
+      clib_warning("SFLOWPSSpec_setAttr(%s) length=%u != expected: %u\n",
+		   SFLOWPS_Fields[field].descr,
+		   len,
+		   expected_len);
       return false;
+    }
     psa->attr.nla_type = field;
     psa->attr.nla_len = sizeof(psa->attr) + len;
     int len_w_pad = NLMSG_ALIGN(len);
@@ -442,6 +410,14 @@ extern "C" {
     spec->n_attrs++;
     spec->attrs_len += sizeof(psa->attr);
     spec->attrs_len += len_w_pad;
+#if 0
+    clib_warning("SFLOWPSSpec_setAttr(%s) len=%u, len_w_pad=%u, iov_len=%u, nattrs=%u\n",
+		 SFLOWPS_Fields[field].descr,
+		 len,
+		 len_w_pad,
+		 psa->val.iov_len,
+		 spec->n_attrs);
+#endif
     return true;
   }
 
@@ -487,6 +463,14 @@ extern "C" {
     }
     ASSERT(nn == spec->n_attrs);
 
+#if 0
+    clib_warning("iov fragments=%u (max=%u)\n", frag, MAX_IOV_FRAGMENTS);
+    for(int ii = 0; ii < frag; ii++) {
+      struct iovec *vec = &iov[ii];
+      clib_warning("  iov[%u] = (base=%p, len=%u)\n", ii, vec->iov_base, vec->iov_len);
+    }
+#endif
+
     struct sockaddr_nl da = {
       .nl_family = AF_NETLINK,
       .nl_groups = (1 << (pst->group_id-1))
@@ -500,9 +484,8 @@ extern "C" {
     };
 
     int status = sendmsg(pst->nl_sock, &msg, 0);
-    // clib_warning("sendmsg returned %d\n", status);
     if (status <= 0) {
-      if (errno != EMSGSIZE)
+      // if (errno != EMSGSIZE)
         clib_warning("strerror(errno) = %s; errno = %d\n", strerror(errno), errno);
       return -1;
     }

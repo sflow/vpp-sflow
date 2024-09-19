@@ -15,7 +15,10 @@
 #include <linux/psample.h>
 #include <signal.h>
 #include <ctype.h>
-  
+
+#define SFLOWPS_PSAMPLE_READNL_RCV_BUF 8192
+#define SFLOWPS_PSAMPLE_READNL_SND_BUF 1000000
+
 /* Shadow the attributes in linux/psample.h so
  * we can easily compile/test fields that are not
  * defined on the kernel we are compiling on.
@@ -39,7 +42,15 @@ static const SFLOWPS_field_t SFLOWPS_Fields[] = {
 #undef SFLOWPS_FIELDDATA
 };
 
+typedef enum {
+  SFLOWPS_STATE_INIT,
+  SFLOWPS_STATE_OPEN,
+  SFLOWPS_STATE_WAIT_FAMILY,
+  SFLOWPS_STATE_READY
+} EnumSFLOWPSState;
+
 typedef struct _SFLOWPS {
+  EnumSFLOWPSState state;
   u32 id;
   int nl_sock;
   u32 nl_seq;
@@ -64,6 +75,8 @@ typedef struct _SFLOWPSSpec {
 
 bool SFLOWPS_open(SFLOWPS *pst);
 bool SFLOWPS_close(SFLOWPS *pst);
+EnumSFLOWPSState SFLOWPS_state(SFLOWPS *pst);
+EnumSFLOWPSState SFLOWPS_open_step(SFLOWPS *pst);
 
 bool SFLOWPSSpec_setAttr(SFLOWPSSpec *spec, EnumSFLOWPSAttributes field, void *buf, int len);
 #define SFLOWPSSpec_setAttrInt(spec, field, val) SFLOWPSSpec_setAttr((spec), (field), &(val), sizeof(val))

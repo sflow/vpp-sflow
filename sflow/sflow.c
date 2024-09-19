@@ -57,8 +57,7 @@ update_counter_vector_simple (stat_segment_data_t *res, sflow_counters_t *ifCtrs
       if(intf == hw_if_index) {
 	u64 count = res->simple_counter_vec[th][intf];
 	if(count) {
-	  clib_warning("%s{thread=\"%d\",interface=\"%d\"} %lld\n",
-		       res->name, th, intf, count);
+	  // clib_warning("%s{thread=\"%d\",interface=\"%d\"} %lld\n", res->name, th, intf, count);
 	  if(strcmp(res->name, "/if/rx-error") == 0)
 	    ifCtrs->rx.errs += count;
 	  else if(strcmp(res->name, "/if/tx-error") == 0)
@@ -82,10 +81,8 @@ update_counter_vector_combined(stat_segment_data_t *res, sflow_counters_t *ifCtr
 	u64 pkts = res->combined_counter_vec[th][intf].packets;
 	u64 byts = res->combined_counter_vec[th][intf].bytes;
 	if(pkts || byts) {
-	  clib_warning("%s_packets{thread=\"%d\",interface=\"%d\"} %lld\n",
-		       res->name, th, intf, pkts);
-	  clib_warning("%s_bytes{thread=\"%d\",interface=\"%d\"} %lld\n",
-		       res->name, th, intf, byts);
+	  // clib_warning("%s_packets{thread=\"%d\",interface=\"%d\"} %lld\n", res->name, th, intf, pkts);
+	  // clib_warning("%s_bytes{thread=\"%d\",interface=\"%d\"} %lld\n", res->name, th, intf, byts);
 	  if(strcmp(res->name, "/if/rx") == 0) {
 	    ifCtrs->rx.pkts += pkts;
 	    ifCtrs->rx.byts += byts;
@@ -219,24 +216,17 @@ sflow_process_samples(vlib_main_t *vm, vlib_node_runtime_t *node,
     vlib_process_wait_for_event_or_clock (vm, poll_wait_S);
     if(!smp->running) {
       // Nothing to do. Just yield again.
-      // Why not enable sFlow?
       continue;
     }
 
-#if SFLOW_CHECK_EVENTS
-    // We can call something like this if something goes wrong that we
-    // want to appear as an event here.
-    // vlib_process_signal_event (vlib_get_main (), sflow_process_samples_node.index, SFLOW_ERROR_PSAMPLE_SEND_FAIL, 0);
-    uword event_type;
-    uword *event_data = 0;
-    event_type = vlib_process_get_events (vm, &event_data);
-    vec_reset_length (event_data);
-    clib_warning("sflow_process_samples: got event_type==%u", event_type);
-    if (event_type == SFLOW_ERROR_PSAMPLE_SEND_FAIL) {
-      // Not sure there is anything we should do here, other than
-      // make the user aware?
+    // PSAMPLE channel may need extra step (e.g. to learn family_id)
+    // before it is ready to send
+    EnumSFLOWPSState psState = SFLOWPS_state(&smp->sflow_psample);
+    if(psState != SFLOWPS_STATE_READY) {
+      clib_warning("PSAMPLE state = %u\n", psState);
+      SFLOWPS_open_step(&smp->sflow_psample);
     }
-#endif
+
     // What we want is a monotonic, per-second clock. This seems to do it
     // because it is based on the CPU clock.
     f64 tnow = clib_time_now(&ctm);
@@ -264,25 +254,29 @@ sflow_process_samples(vlib_main_t *vm, vlib_node_runtime_t *node,
     // TODO: how many should we be prepared to read here?
     // Our maximum samples/sec is approximately:
     // (SFLOW_READ_BATCH * smp->total_threads) / SFLOW_POLL_WAIT_S
-    // but it may also be affected by SFLOW_FIFO_SIZE and SFLOW_MAX_HEADER_BYTES,
+    // but it may also be affected by SFLOW_FIFO_DEPTH
     // and whether vlib_process_wait_for_event_or_clock() really waits for
     // SFLOW_POLL_WAIT_S every time.
     // If there are too many samples then dropping them as early as possible
-    // (and as randomly as possible) is preferred, so SFLOW_FIFO_SIZE should not
+    // (and as randomly as possible) is preferred, so SFLOW_FIFO_DEPTH should not
     // be any bigger than it strictly needs to be. If there is a system bottleneck
     // it could be in the PSAMPLE netlink channel, the hsflowd encoder, the
     // UDP stack, the network path, the collector, or a faraway application.
     // Any kind of "clipping" will result in systematic bias so we try to make
     // this fair even when it's running hot. For example, we'll round-robin the
-    // thread FIFO dequeues here to avoid bias. Even though it might
-    // have been more efficient to drain each one in turn.
+    // thread FIFO dequeues here to avoid bias. It's important to give them
+    // equal access to the PSAMPLE channel.
     for(u32 batch = 0; batch < SFLOW_READ_BATCH; batch++) {
       u32 psample_send = 0, psample_send_fail = 0;
       for(u32 thread_index = 0; thread_index < smp->total_threads; thread_index++) {
 	sflow_per_thread_data_t *sfwk = vec_elt_at_index(smp->per_thread_data, thread_index);
 	// TODO: dequeue and write multiple samples at a time
 	sflow_sample_t sample;
-	if(svm_fifo_dequeue(sfwk->fifo, sizeof(sflow_sample_t), (u8 *)&sample) == sizeof(sflow_sample_t)) {
+	if(sflow_fifo_dequeue(&sfwk->fifo, &sample)) {
+	  if(sample.header_bytes > smp->header_bytes) {
+	    clib_warning("sample.header_bytes too big: %u\n", sample.header_bytes);
+	    continue;
+	  }
 	  SFLOWPSSpec spec = {};
 	  u32 ps_group = SFLOW_VPP_PSAMPLE_GROUP_INGRESS;
 	  // TODO: is it always ethernet? (affects ifType counter as well)
@@ -300,6 +294,7 @@ sflow_process_samples(vlib_main_t *vm, vlib_node_runtime_t *node,
 	    psample_send_fail++;
 	}
       }
+      // clib_warning("process_samples: sent=%u failed=%u\n", psample_send, psample_send_fail);
       if(psample_send == 0) {
 	// nothing found on FIFOs this time through, so terminate batch early	
 	break;
@@ -321,18 +316,23 @@ VLIB_REGISTER_NODE (sflow_process_samples_node, static) = {
   .process_log2_n_stack_bytes = 17,
 };
 
-static void init_worker_fifo(sflow_per_thread_data_t *sfwk) {
-  fifo_segment_create_args_t _a, *a = &_a;
-  clib_memset (a, 0, sizeof (*a));
-  // TODO: do we need separate name for each worker FIFO?
-  a->segment_name = "fifo-sflow-worker";
-  a->segment_size = SFLOW_FIFO_SIZE;
-  a->segment_type = SSVM_SEGMENT_PRIVATE;
-  // TODO: test return codes and print errors
-  fifo_segment_create(&sfwk->fsm, a);
-  sfwk->fs = fifo_segment_get_segment(&sfwk->fsm, a->new_segment_indices[0]);
-  // TODO: try to understand what these parameters mean
-  sfwk->fifo = fifo_segment_alloc_fifo_w_slice(sfwk->fs, 0, SFLOW_FIFO_SLICE, FIFO_SEGMENT_TX_FIFO);
+static void sflow_set_worker_sampling_state(sflow_main_t *smp) {
+  /* set up (or reset) sampling context for each thread */
+  vlib_thread_main_t *tm = &vlib_thread_main;
+  smp->total_threads = 1 + tm->n_threads;
+  vec_validate (smp->per_thread_data, smp->total_threads);
+  for(u32 thread_index = 0; thread_index < smp->total_threads; thread_index++) {
+    sflow_per_thread_data_t *sfwk = vec_elt_at_index(smp->per_thread_data, thread_index);
+    if(sfwk->smpN != smp->samplingN) {
+      sfwk->smpN = smp->samplingN;
+      sfwk->seed = thread_index;
+      sfwk->skip = sflow_next_random_skip(sfwk);
+      clib_warning("sflowset_worker_sampling_state: samplingN=%u thread=%u skip=%u",
+		   smp->samplingN,
+		   thread_index,
+		   sfwk->skip);
+    }
+  }
 }
 
 static void sflow_sampling_start(sflow_main_t *smp) {
@@ -344,24 +344,6 @@ static void sflow_sampling_start(sflow_main_t *smp) {
   // (2) vpp restarted with default sFlow => status updates (starting again from 0)
   smp->now_mono_S = 0;
 
-  /* set up (or reset) sampling context for each thread */
-  vlib_thread_main_t *tm = &vlib_thread_main;
-  smp->total_threads = 1 + tm->n_threads;
-  vec_validate (smp->per_thread_data, smp->total_threads);
-  for(u32 thread_index = 0; thread_index < smp->total_threads; thread_index++) {
-    sflow_per_thread_data_t *sfwk = vec_elt_at_index(smp->per_thread_data, thread_index);
-    if(sfwk->smpN != smp->samplingN) {
-      sfwk->smpN = smp->samplingN;
-      sfwk->seed = thread_index;
-      sfwk->skip = sflow_next_random_skip(sfwk);
-      if(sfwk->fifo == NULL)
-	init_worker_fifo(sfwk);
-      clib_warning("sflow startup: samplingN=%u thread=%u skip=%u",
-		   smp->samplingN,
-		   thread_index,
-		   sfwk->skip);
-    }
-  }
   
   /* Some per-thread numbers are maintained only in the main thread. */
   vec_validate (smp->main_per_thread_data, smp->total_threads);
@@ -371,6 +353,9 @@ static void sflow_sampling_start(sflow_main_t *smp) {
   /* open USERSOCK netlink channel for writing counters */
   SFLOWUS_open(&smp->sflow_usersock);
   smp->sflow_usersock.group_id = SFLOW_NETLINK_USERSOCK_MULTICAST;
+  /* set up (or reset) sampling context for each thread */
+  sflow_set_worker_sampling_state(smp);
+
   clib_warning("sflow_sampling_start done");
 }
       
@@ -395,15 +380,24 @@ static void sflow_sampling_start_stop(sflow_main_t *smp) {
 
 int sflow_sampling_rate (sflow_main_t * smp, u32 samplingN)
 {
-  smp->samplingN = samplingN;
-  sflow_sampling_start_stop(smp);
+  if(smp->running
+     && smp->samplingN
+     && samplingN) {
+    // dynamic change of sampling rate
+    smp->samplingN = samplingN;
+    sflow_set_worker_sampling_state(smp);
+  }
+  else {
+    // potential on/off change
+    smp->samplingN = samplingN;
+    sflow_sampling_start_stop(smp);
+  }
   return 0;
 }
 
 int sflow_polling_interval (sflow_main_t * smp, u32 pollingS)
 {
   smp->pollingS = pollingS;
-  // TODO: reschedule ports?
   return 0;
 }
 

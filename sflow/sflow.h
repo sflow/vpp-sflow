@@ -24,10 +24,6 @@
 
 #include <vppinfra/hash.h>
 #include <vppinfra/error.h>
-#include <svm/svm_fifo.h>
-#include <svm/svm_common.h>
-#include <svm/fifo_segment.h>
-
 #include <sflow/sflow_psample.h>
 #include <sflow/sflow_usersock.h>
 
@@ -35,10 +31,17 @@
 #define SFLOW_DEFAULT_POLLING_S 20
 #define SFLOW_DEFAULT_HEADER_BYTES 128
 #define SFLOW_MAX_HEADER_BYTES 256
-#define SFLOW_FIFO_SLICE 512
-#define SFLOW_FIFO_SIZE 4096 * SFLOW_FIFO_SLICE
+
+#define SFLOW_FIFO_DEPTH 2048 // must be power of 2
+
+//#define SFLOW_TEST_SLOW_POLL 1
+#ifdef SFLOW_TEST_SLOW_POLL
+#define SFLOW_POLL_WAIT_S 1
+#define SFLOW_READ_BATCH 1
+#else
 #define SFLOW_POLL_WAIT_S 0.001
 #define SFLOW_READ_BATCH 100
+#endif
 
 // use PSAMPLE group number to distinguish VPP samples from others
 // (so that hsflowd will know to remap the ifIndex numbers if necessary)
@@ -74,6 +77,37 @@ typedef struct {
   u8 header[SFLOW_MAX_HEADER_BYTES];
 } sflow_sample_t;
 
+// Define SPSC FIFO for sending samples worker-to-main.
+// (I did try to use VPP svm FIFO, but couldn't
+// understand why it was sometimes going wrong).
+typedef struct {
+  volatile u32 tx; // can change under consumer's feet
+  volatile u32 rx; // can change under producer's feet
+  sflow_sample_t samples[SFLOW_FIFO_DEPTH];
+} sflow_fifo_t;
+
+#define SFLOW_FIFO_NEXT(slot) ((slot+1) & (SFLOW_FIFO_DEPTH-1))
+static inline int
+sflow_fifo_enqueue(sflow_fifo_t *fifo, sflow_sample_t *sample) {
+  u32 next_tx = SFLOW_FIFO_NEXT(fifo->tx);
+  if(next_tx == fifo->rx)
+    return false; // full
+  memcpy(&fifo->samples[next_tx], sample, sizeof(*sample));
+  clib_atomic_fence_rel(); // flush before we move the chains
+  fifo->tx = next_tx;
+  return true;
+}
+
+static inline int
+sflow_fifo_dequeue(sflow_fifo_t *fifo, sflow_sample_t *sample) {
+  if(fifo->rx == fifo->tx)
+    return false; // empty
+  memcpy(sample, &fifo->samples[fifo->rx], sizeof(*sample));
+  clib_atomic_fence_rel(); // flush before we move the chains
+  fifo->rx = SFLOW_FIFO_NEXT(fifo->rx);
+  return true;
+}
+  
 /* private to worker */
 typedef struct {
   u32 smpN;
@@ -82,9 +116,8 @@ typedef struct {
   u32 seed;
   u32 seqN;
   u32 drop;
-  fifo_segment_main_t fsm;
-  fifo_segment_t *fs;
-  svm_fifo_t *fifo;
+  CLIB_CACHE_LINE_ALIGN_MARK(_fifo);
+  sflow_fifo_t fifo;
 } sflow_per_thread_data_t;
 
 /* private to main thread */

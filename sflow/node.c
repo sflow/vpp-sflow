@@ -76,16 +76,6 @@ typedef enum
   SFLOW_N_NEXT,
 } sflow_next_t;
 
-#ifdef SFLOW_LOG_CYCLES
-// TODO: there is a VPP library call for this
-static inline uint64_t get_cycles()
-{
-  uint64_t t;
-  __asm volatile ("rdtsc" : "=A"(t));
-  return t;
-}
-#endif
-
 VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
 		  vlib_node_runtime_t * node,
 		  vlib_frame_t * frame)
@@ -121,7 +111,7 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
     // so that 1:1 can still be set if you know what you are doing :)
     while(pkts > sfwk->skip) {
 #ifdef SFLOW_LOG_CYCLES
-      uint64_t cycles1 = get_cycles();
+      u64 cycles1 = clib_cpu_time_now();
 #endif
       /* reach in to get the one we want. */
       vlib_buffer_t *bN = vlib_get_buffer (vm, from[sfwk->skip]);
@@ -177,15 +167,16 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
       //		     hw->hw_if_index,
       //		     vec_len(vm->pending_rpc_requests));
       memcpy(sample.header, en, hdr);
-      // TODO: adjust size (though it might be just as fast to always copy 128 bytes)
+      // TODO: adjust size (though it might be just as fast to always copy sizeof(sflow_sample_t) bytes)
       
-      svm_fifo_enqueue(sfwk->fifo, sizeof(sample), (u8 *)&sample);
+      if(!sflow_fifo_enqueue(&sfwk->fifo, &sample))
+	pkts_dropped++;
       
       pkts -= sfwk->skip;
       sfwk->pool += sfwk->skip;
       sfwk->skip = sflow_next_random_skip(sfwk);
 #ifdef SFLOW_LOG_CYCLES
-      uint64_t cycles2 = get_cycles();
+      uint64_t cycles2 = clib_cpu_time_now();
       clib_warning("sample cycles = %u", (cycles2 - cycles1));
       vlib_node_increment_counter (vm, sflow_node.index, SFLOW_ERROR_CYCLES, (cycles2-cycles1));
 #endif
@@ -335,7 +326,6 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
     vlib_put_next_frame (vm, node, next_index, n_left_to_next);
   }
   
-  // does this increment atomically or per-cpu?
   vlib_node_increment_counter (vm, sflow_node.index, SFLOW_ERROR_PROCESSED, pkts_processed);
   if (pkts_sampled)
     vlib_node_increment_counter (vm, sflow_node.index, SFLOW_ERROR_SAMPLED, pkts_sampled);
