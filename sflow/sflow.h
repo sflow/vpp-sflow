@@ -32,7 +32,12 @@
 #define SFLOW_DEFAULT_HEADER_BYTES 128
 #define SFLOW_MAX_HEADER_BYTES 256
 
+#define SFLOW_TEST_SHORT_FIFO 1
+#ifdef SFLOW_TEST_SHORT_FIFO
+#define SFLOW_FIFO_DEPTH 4 // must be power of 2
+#else
 #define SFLOW_FIFO_DEPTH 2048 // must be power of 2
+#endif
 
 //#define SFLOW_TEST_SLOW_POLL 1
 #ifdef SFLOW_TEST_SLOW_POLL
@@ -89,22 +94,25 @@ typedef struct {
 #define SFLOW_FIFO_NEXT(slot) ((slot+1) & (SFLOW_FIFO_DEPTH-1))
 static inline int
 sflow_fifo_enqueue(sflow_fifo_t *fifo, sflow_sample_t *sample) {
-  u32 next_tx = SFLOW_FIFO_NEXT(fifo->tx);
-  if(next_tx == fifo->rx)
+  u32 curr_rx = clib_atomic_load_acq_n(&fifo->rx);
+  u32 curr_tx = fifo->tx; // clib_atomic_load_acq_n(&fifo->tx);
+  u32 next_tx = SFLOW_FIFO_NEXT(curr_tx);
+  if(next_tx == curr_rx)
     return false; // full
   memcpy(&fifo->samples[next_tx], sample, sizeof(*sample));
-  clib_atomic_fence_rel(); // flush before we move the chains
-  fifo->tx = next_tx;
+  clib_atomic_store_rel_n(&fifo->tx, next_tx);
   return true;
 }
 
 static inline int
 sflow_fifo_dequeue(sflow_fifo_t *fifo, sflow_sample_t *sample) {
-  if(fifo->rx == fifo->tx)
+  u32 curr_rx = fifo->rx; // clib_atomic_load_acq_n(&fifo->rx);
+  u32 curr_tx = clib_atomic_load_acq_n(&fifo->tx);
+  if(curr_rx == curr_tx)
     return false; // empty
-  memcpy(sample, &fifo->samples[fifo->rx], sizeof(*sample));
-  clib_atomic_fence_rel(); // flush before we move the chains
-  fifo->rx = SFLOW_FIFO_NEXT(fifo->rx);
+  memcpy(sample, &fifo->samples[curr_rx], sizeof(*sample));
+  u32 next_rx = SFLOW_FIFO_NEXT(curr_rx);
+  clib_atomic_store_rel_n(&fifo->rx, next_rx);
   return true;
 }
   
