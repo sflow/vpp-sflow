@@ -62,6 +62,7 @@ typedef enum {
   SFLOW_VPP_ATTR_HW_ADDRESS,    /* binary */
   SFLOW_VPP_ATTR_UPTIME_S,      /* u32 */
   SFLOW_VPP_ATTR_OSINDEX,       /* u32 Linux ifIndex number, where applicable */
+  SFLOW_VPP_ATTR_DROPS,         /* u32 all FIFO and netlink sendmsg drops */
   /* enum shared with hsflowd, so only add here */
   __SFLOW_VPP_ATTR_MAX
 } EnumSFlowVppAttributes;

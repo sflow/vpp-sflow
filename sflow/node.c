@@ -145,19 +145,11 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
       /* copy to the PSAMPLE generic netlink channel (via the main thread
        * so that we don't stall the worker thread on a system call).
        */
-      /* increment seqN before we decide whether to drop the sample or not.
-       * That way the combined seqN that we give to PSAMPLE can be interpreted
-       * correctly at the receiving end to infer drops.
-       */
-      sfwk->seqN++;
       sflow_sample_t sample = {
 	.samplingN = sfwk->smpN,
 	.input_if_index = if_index,
 	.sampled_packet_size = bN->current_length + bN->total_length_not_including_first_buffer,
-	.header_bytes = hdr,
-	.thread_index = thread_index,
-	.thread_seqN = sfwk->seqN,
-	.thread_drop = sfwk->drop
+	.header_bytes = hdr
       };
       pkts_sampled++;
       
@@ -327,8 +319,10 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
   vlib_node_increment_counter (vm, sflow_node.index, SFLOW_ERROR_PROCESSED, pkts_processed);
   if (pkts_sampled)
     vlib_node_increment_counter (vm, sflow_node.index, SFLOW_ERROR_SAMPLED, pkts_sampled);
-  if (pkts_dropped)
+  if (pkts_dropped) {
     vlib_node_increment_counter (vm, sflow_node.index, SFLOW_ERROR_DROPPED, pkts_dropped);
+    sfwk->drop += pkts_dropped;
+  }
   return frame->n_vectors;
 }
 

@@ -240,7 +240,15 @@ sflow_process_samples(vlib_main_t *vm, vlib_node_runtime_t *node,
       SFLOWUSSpec spec = {};
       SFLOWUSSpec_setMsgType(&spec, SFLOW_VPP_MSG_STATUS);
       SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_UPTIME_S, smp->now_mono_S);
-      // TODO: report other performance counters here, such as worker FIFO enqueue failures
+      
+      // sum sendmsg and worker-fifo drops
+      u32 all_pipeline_drops = smp->psample_send_drops;
+      for(u32 thread_index = 0; thread_index < smp->total_threads; thread_index++) {
+	sflow_per_thread_data_t *sfwk = vec_elt_at_index(smp->per_thread_data, thread_index);
+	all_pipeline_drops += sfwk->drop;
+      }
+      SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_DROPS, all_pipeline_drops);
+
       SFLOWUSSpec_send(&smp->sflow_usersock, &spec);
       // see if we should poll one or more interfaces
       for(int ii = 0; ii < vec_len(smp->main_per_interface_data); ii++) {
@@ -281,13 +289,14 @@ sflow_process_samples(vlib_main_t *vm, vlib_node_runtime_t *node,
 	  }
 	  SFLOWPSSpec spec = {};
 	  u32 ps_group = SFLOW_VPP_PSAMPLE_GROUP_INGRESS;
+	  u32 seqNo = ++smp->psample_seq_ingress;
 	  // TODO: is it always ethernet? (affects ifType counter as well)
 	  u16 header_protocol = 1; /* ethernet */
 	  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_SAMPLE_GROUP, ps_group);
 	  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_IIFINDEX, sample.input_if_index);
 	  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_OIFINDEX, sample.output_if_index);
 	  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_ORIGSIZE, sample.sampled_packet_size);
-	  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_GROUP_SEQ, sample.thread_seqN);
+	  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_GROUP_SEQ, seqNo);
 	  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_SAMPLE_RATE, sample.samplingN);
 	  SFLOWPSSpec_setAttr(&spec, SFLOWPS_PSAMPLE_ATTR_DATA, sample.header, sample.header_bytes);
 	  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_PROTO, header_protocol);
@@ -303,8 +312,10 @@ sflow_process_samples(vlib_main_t *vm, vlib_node_runtime_t *node,
       }
       else {
 	vlib_node_increment_counter (smp->vlib_main, sflow_node.index, SFLOW_ERROR_PSAMPLE_SEND, psample_send);
-	if (psample_send_fail>0)
+	if (psample_send_fail>0) {
 	  vlib_node_increment_counter (smp->vlib_main, sflow_node.index, SFLOW_ERROR_PSAMPLE_SEND_FAIL, psample_send_fail);
+	  smp->psample_send_drops += psample_send_fail;
+	}
       }
     }
   }
@@ -346,10 +357,11 @@ static void sflow_sampling_start(sflow_main_t *smp) {
   // (2) vpp restarted with default sFlow => status updates (starting again from 0)
   smp->now_mono_S = 0;
 
+  // reset sequence numbers to indicated discontinuity
+  smp->psample_seq_ingress = 0;
+  smp->psample_seq_egress = 0;
+  smp->psample_send_drops = 0;
   
-  /* Some per-thread numbers are maintained only in the main thread. */
-  vec_validate (smp->main_per_thread_data, smp->total_threads);
-
   /* open PSAMPLE netlink channel for writing packet samples */
   SFLOWPS_open(&smp->sflow_psample);
   /* open USERSOCK netlink channel for writing counters */

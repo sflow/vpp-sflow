@@ -73,9 +73,6 @@ typedef struct {
   u32 header_protocol;
   u32 sampled_packet_size;
   u32 header_bytes;
-  u32 thread_index;
-  u32 thread_seqN;
-  u32 thread_drop;
   u8 header[SFLOW_MAX_HEADER_BYTES];
 } sflow_sample_t;
 
@@ -119,17 +116,10 @@ typedef struct {
   u32 skip;
   u32 pool;
   u32 seed;
-  u32 seqN;
   u32 drop;
   CLIB_CACHE_LINE_ALIGN_MARK(_fifo);
   sflow_fifo_t fifo;
 } sflow_per_thread_data_t;
-
-/* private to main thread */
-typedef struct {
-  u32 seqN;
-  u32 drop;
-} sflow_main_per_thread_data_t;
 
 /* private to main thread
    TODO: assuming polling is also moved to main thread */
@@ -155,9 +145,6 @@ typedef struct {
   u32 pollingS;
   u32 header_bytes;
   u32 total_threads;
-  u32 *per_thread_seqN;
-  u32 *per_thread_drop;
-  sflow_main_per_thread_data_t *main_per_thread_data;
   sflow_main_per_interface_data_t *main_per_interface_data;
   sflow_per_thread_data_t *per_thread_data;
 
@@ -175,6 +162,11 @@ typedef struct {
   /* running control */
   int running;
   u32 interfacesEnabled;
+
+  /* main-thread counters */
+  u32 psample_seq_ingress;
+  u32 psample_seq_egress;
+  u32 psample_send_drops;
 
 } sflow_main_t;
 
