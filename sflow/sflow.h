@@ -136,6 +136,7 @@ typedef struct {
 typedef struct {
   u32 sw_if_index;
   u32 hw_if_index;
+  u32 linux_if_index;
   int sflow_enabled;
   // TODO: possibly keep cache of counter index numbers here?
 } sflow_main_per_interface_data_t;

@@ -61,6 +61,7 @@ typedef enum {
   SFLOW_VPP_ATTR_TX_ERRORS,     /* u64 */
   SFLOW_VPP_ATTR_HW_ADDRESS,    /* binary */
   SFLOW_VPP_ATTR_UPTIME_S,      /* u32 */
+  SFLOW_VPP_ATTR_OSINDEX,       /* u32 Linux ifIndex number, where applicable */
   /* enum shared with hsflowd, so only add here */
   __SFLOW_VPP_ATTR_MAX
 } EnumSFlowVppAttributes;

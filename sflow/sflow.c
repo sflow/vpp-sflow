@@ -157,6 +157,10 @@ static void update_counters(sflow_main_t *smp, sflow_main_per_interface_data_t *
   SFLOWUSSpec_setMsgType(&spec, SFLOW_VPP_MSG_IF_COUNTERS);
   SFLOWUSSpec_setAttr(&spec, SFLOW_VPP_ATTR_PORTNAME, hw->name, strlen((char *)hw->name));
   SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_IFINDEX, sfif->hw_if_index);
+  if(sfif->linux_if_index) {
+    // We know the corresponding Linux ifIndex for this interface, so include that here.
+    SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_OSINDEX, sfif->linux_if_index);
+  }
   
   // Report consistent with vpp-snmp-agent
   u64 ifSpeed = (hw->link_speed == ~0)
@@ -436,6 +440,7 @@ int sflow_enable_disable (sflow_main_t * smp, u32 sw_if_index, int enable_disabl
     // OK, turn it on/off
     sfif->sw_if_index = sw_if_index;
     sfif->hw_if_index = sw->hw_if_index;
+    // TODO: send vapi request to learn sfif->linux_if_index here?
     sfif->sflow_enabled = enable_disable;
     vnet_feature_enable_disable ("device-input", "sflow", sw_if_index, enable_disable, 0, 0);
     smp->interfacesEnabled += (enable_disable) ? 1 : -1;
