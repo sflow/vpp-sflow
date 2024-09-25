@@ -46,13 +46,6 @@
 
 DEFINE_VAPI_MSG_IDS_LCP_API_JSON;
 
-// pthread_tryjoin_np not declared (needed __USE_GNU), so just reference
-// it here.  TODO: to avoid using this can probably just set an integer
-// before forking and clear it as the last thing the thread does (or set
-// it to something that means "don't bother" if there was an error and
-// we don't want to try again.
-extern int pthread_tryjoin_np (pthread_t __th, void **__thread_return) __THROW;
-
 #define REPLY_MSG_ID_BASE smp->msg_id_base
 #include <vlibapi/api_helper_macros.h>
 
@@ -86,7 +79,8 @@ my_pair_details_cb(struct vapi_ctx_s *ctx,
 
 // in forked thread
 static void *get_lcp_itf_pairs(void *magic) {
-  sflow_main_per_interface_data_t *intfs = magic;
+  sflow_main_t *smp = magic;
+  sflow_main_per_interface_data_t *intfs = smp->vapi_itfs;
   vapi_ctx_t ctx;
   vapi_error_e rv;
   if((rv = vapi_ctx_alloc(&ctx)) != VAPI_OK) {
@@ -114,6 +108,9 @@ static void *get_lcp_itf_pairs(void *magic) {
     }
     vapi_ctx_free (ctx);
   }
+  // indicate that we are done - more portable that using pthread_tryjoin_np()
+  smp->vapi_request_status = (int)rv;
+  smp->vapi_request_active = false;
   return (void *)rv;
 }
 
@@ -294,22 +291,22 @@ read_linux_if_index_numbers(sflow_main_t *smp) {
   // Don't even try if the linux-cp plugin is not loaded
   if(vlib_get_plugin_symbol("linux_cp_plugin.so", "lcp_itf_pair_get")) {
     // first confirm that the previous query is done
-    int rv = 0;
     if(smp->vapi_itfs == NULL
-       || (rv = pthread_tryjoin_np(smp->vapi_thread, &smp->vapi_rtn)) == 0) {
-      clib_warning("get_lcp_itf_pairs returned ans=%lld", (intptr_t)smp->vapi_rtn);
+       || smp->vapi_request_active == false) {
       // OK to proceed - make a copy of the current interfaces vector...
       if(smp->vapi_itfs)
 	vec_free(smp->vapi_itfs);
       smp->vapi_itfs = vec_dup(smp->main_per_interface_data);
       // ...and give it to the lookup
-      pthread_create(&smp->vapi_thread, NULL, get_lcp_itf_pairs, smp->vapi_itfs);
+      smp->vapi_request_active = true;
+      pthread_create(&smp->vapi_thread, NULL, get_lcp_itf_pairs, smp);
       return true;
     }
     else {
       // We get here if the lookup is slow or is deadlocked. Which can happen if
-      // there is no handler for the request we sent.
-      clib_warning("pthread_tryjoin_np() returned %d", rv);
+      // there is no handler for the request we sent. Much better to be stuck
+      // here than to risk stalling the main thread.
+      clib_warning("vapi_thread request still waiting");
     }
   }
   return false;

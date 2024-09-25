@@ -168,9 +168,9 @@ typedef struct {
 
   /* vapi query thread (transient) */
   pthread_t vapi_thread;
-  void *vapi_rtn;
   sflow_main_per_interface_data_t *vapi_itfs;
-  
+  int vapi_request_active;
+  int vapi_request_status;
 } sflow_main_t;
 
 extern sflow_main_t sflow_main;
