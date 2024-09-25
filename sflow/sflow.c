@@ -29,10 +29,93 @@
 #include <vpp-api/client/stat_client.h>
 #include <vlib/stats/stats.h>
 
+#include <vapi/vapi.h>
+#include <vapi/memclnt.api.vapi.h>
+#include <vapi/vlib.api.vapi.h>
+
+#ifdef included_interface_types_api_types_h
+#define defined_vapi_enum_if_status_flags
+#define defined_vapi_enum_mtu_proto
+#define defined_vapi_enum_link_duplex
+#define defined_vapi_enum_sub_if_flags
+#define defined_vapi_enum_rx_mode
+#define defined_vapi_enum_if_type
+#define defined_vapi_enum_direction
+#endif
+#include <vapi/lcp.api.vapi.h>
+
+DEFINE_VAPI_MSG_IDS_LCP_API_JSON;
+
+// pthread_tryjoin_np not declared (needed __USE_GNU), so just reference
+// it here.  TODO: to avoid using this can probably just set an integer
+// before forking and clear it as the last thing the thread does (or set
+// it to something that means "don't bother" if there was an error and
+// we don't want to try again.
+extern int pthread_tryjoin_np (pthread_t __th, void **__thread_return) __THROW;
+
 #define REPLY_MSG_ID_BASE smp->msg_id_base
 #include <vlibapi/api_helper_macros.h>
 
 sflow_main_t sflow_main;
+
+static vapi_error_e
+my_pair_get_cb(struct vapi_ctx_s *ctx,
+	       void *callback_ctx,
+	       vapi_error_e rv,
+	       bool is_last,
+	       vapi_payload_lcp_itf_pair_get_v2_reply *reply) {
+  sflow_main_per_interface_data_t *sfif = (sflow_main_per_interface_data_t *)callback_ctx;
+  // We get here if there is no corresponding Linux interface, so clear it.
+  sfif->linux_if_index = 0;
+  clib_warning("my_pair_get_cb, rv=%d, sw_if_index=%d\n", rv, sfif->sw_if_index);
+  return 0;
+}
+
+static vapi_error_e
+my_pair_details_cb(struct vapi_ctx_s *ctx,
+		   void *callback_ctx,
+		   vapi_error_e rv,
+		   bool is_last,
+		   vapi_payload_lcp_itf_pair_details *details) {
+  sflow_main_per_interface_data_t *sfif = (sflow_main_per_interface_data_t *)callback_ctx;
+  // Setting this here will mean it is sent to hsflowd with the interface counters.
+  sfif->linux_if_index = details->vif_index; // TODO: or is it details->host_if_index?
+  clib_warning("my_pair_details_cb, rv=%d, sw_if_index=%d\n", rv, sfif->sw_if_index);
+  return 0;
+}  
+
+// in forked thread
+static void *get_lcp_itf_pairs(void *magic) {
+  sflow_main_per_interface_data_t *intfs = magic;
+  vapi_ctx_t ctx;
+  vapi_error_e rv;
+  if((rv = vapi_ctx_alloc(&ctx)) != VAPI_OK) {
+    clib_warning("vap_ctx_alloc() returned %d", rv);
+  }
+  else {
+    if((rv = vapi_connect_from_vpp(ctx, "api_from_sflow_plugin", 64, 32, VAPI_MODE_BLOCKING, true)) != VAPI_OK) {
+      clib_warning("vapi_connect_from_vpp() returned %d", rv);
+    }
+    else {
+      for(int ii = 0; ii < vec_len(intfs); ii++) {
+	sflow_main_per_interface_data_t *sfif = vec_elt_at_index(intfs, ii);
+	if(sfif
+	   && sfif->sflow_enabled) {
+	  vapi_msg_lcp_itf_pair_get_v2 *msg = vapi_alloc_lcp_itf_pair_get_v2(ctx);
+	  if(msg) {
+	    msg->payload.sw_if_index = sfif->sw_if_index;
+	    if((rv = vapi_lcp_itf_pair_get_v2(ctx, msg, my_pair_get_cb, sfif, my_pair_details_cb, sfif)) != VAPI_OK) {
+	      clib_warning("vapi_lcp_itf_pair_get_v2 returned %d", rv);
+	    }
+	  }
+	}
+      }
+      vapi_disconnect_from_vpp (ctx);
+    }
+    vapi_ctx_free (ctx);
+  }
+  return (void *)rv;
+}
 
 static void
 sflow_stat_segment_client_init (void)
@@ -136,6 +219,9 @@ static void update_counters(sflow_main_t *smp, sflow_main_per_interface_data_t *
   sflow_counters_t ifCtrs = {};
   // and accumulate the (per-thread) entries for this interface
   for (int ii = 0; ii < vec_len (res); ii++) {
+    /* if(strstr(res[ii].name, "lcp") */
+    /*    || strstr(res[ii].name, "tap")) */
+    /*   clib_warning("res name = %s type=%d\n", res[ii].name, res[ii].type); */
     switch (res[ii].type) {
     case STAT_DIR_TYPE_COUNTER_VECTOR_SIMPLE:
       update_counter_vector_simple (&res[ii], &ifCtrs, sfif->hw_if_index);
@@ -202,6 +288,127 @@ static void update_counters(sflow_main_t *smp, sflow_main_per_interface_data_t *
   SFLOWUSSpec_send(&smp->sflow_usersock, &spec);
 }
 
+static int
+read_linux_if_index_numbers(sflow_main_t *smp) {
+  // get linux if_index numbers where applicable.
+  // Don't even try if the linux-cp plugin is not loaded
+  if(vlib_get_plugin_symbol("linux_cp_plugin.so", "lcp_itf_pair_get")) {
+    // first confirm that the previous query is done
+    int rv = 0;
+    if(smp->vapi_itfs == NULL
+       || (rv = pthread_tryjoin_np(smp->vapi_thread, &smp->vapi_rtn)) == 0) {
+      clib_warning("get_lcp_itf_pairs returned ans=%lld", (intptr_t)smp->vapi_rtn);
+      // OK to proceed - make a copy of the current interfaces vector...
+      if(smp->vapi_itfs)
+	vec_free(smp->vapi_itfs);
+      smp->vapi_itfs = vec_dup(smp->main_per_interface_data);
+      // ...and give it to the lookup
+      pthread_create(&smp->vapi_thread, NULL, get_lcp_itf_pairs, smp->vapi_itfs);
+      return true;
+    }
+    else {
+      // We get here if the lookup is slow or is deadlocked. Which can happen if
+      // there is no handler for the request we sent.
+      clib_warning("pthread_tryjoin_np() returned %d", rv);
+    }
+  }
+  return false;
+}
+
+static void
+send_sampling_status_info(sflow_main_t *smp) {
+  SFLOWUSSpec spec = {};
+  SFLOWUSSpec_setMsgType(&spec, SFLOW_VPP_MSG_STATUS);
+  SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_UPTIME_S, smp->now_mono_S);
+  // sum sendmsg and worker-fifo drops
+  u32 all_pipeline_drops = smp->psample_send_drops;
+  for(u32 thread_index = 0; thread_index < smp->total_threads; thread_index++) {
+    sflow_per_thread_data_t *sfwk = vec_elt_at_index(smp->per_thread_data, thread_index);
+    all_pipeline_drops += sfwk->drop;
+  }
+  SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_DROPS, all_pipeline_drops);
+  SFLOWUSSpec_send(&smp->sflow_usersock, &spec);
+}
+
+static int
+counter_polling_check(sflow_main_t *smp) {
+  // see if we should poll one or more interfaces
+  int polled = 0;
+  for(int ii = 0; ii < vec_len(smp->main_per_interface_data); ii++) {
+    sflow_main_per_interface_data_t *sfif = vec_elt_at_index(smp->main_per_interface_data, ii);
+    if(sfif
+       && sfif->sflow_enabled
+       && (smp->now_mono_S % smp->pollingS) == (sfif->hw_if_index % smp->pollingS)) {
+      update_counters(smp, sfif);
+      polled++;
+    }
+  }
+  return polled;
+}
+
+static u32
+read_worker_fifos(sflow_main_t *smp) {
+  // TODO: how many should we be prepared to read here?
+  // Our maximum samples/sec is approximately:
+  // (SFLOW_READ_BATCH * smp->total_threads) / SFLOW_POLL_WAIT_S
+  // but it may also be affected by SFLOW_FIFO_DEPTH
+  // and whether vlib_process_wait_for_event_or_clock() really waits for
+  // SFLOW_POLL_WAIT_S every time.
+  // If there are too many samples then dropping them as early as possible
+  // (and as randomly as possible) is preferred, so SFLOW_FIFO_DEPTH should not
+  // be any bigger than it strictly needs to be. If there is a system bottleneck
+  // it could be in the PSAMPLE netlink channel, the hsflowd encoder, the
+  // UDP stack, the network path, the collector, or a faraway application.
+  // Any kind of "clipping" will result in systematic bias so we try to make
+  // this fair even when it's running hot. For example, we'll round-robin the
+  // thread FIFO dequeues here to avoid bias. It's important to give them
+  // equal access to the PSAMPLE channel.
+  u32 batch = 0;
+  for(; batch < SFLOW_READ_BATCH; batch++) {
+    u32 psample_send = 0, psample_send_fail = 0;
+    for(u32 thread_index = 0; thread_index < smp->total_threads; thread_index++) {
+      sflow_per_thread_data_t *sfwk = vec_elt_at_index(smp->per_thread_data, thread_index);
+      // TODO: dequeue and write multiple samples at a time
+      sflow_sample_t sample;
+      if(sflow_fifo_dequeue(&sfwk->fifo, &sample)) {
+	if(sample.header_bytes > smp->header_bytes) {
+	  clib_warning("sample.header_bytes too big: %u\n", sample.header_bytes);
+	  continue;
+	}
+	SFLOWPSSpec spec = {};
+	u32 ps_group = SFLOW_VPP_PSAMPLE_GROUP_INGRESS;
+	u32 seqNo = ++smp->psample_seq_ingress;
+	// TODO: is it always ethernet? (affects ifType counter as well)
+	u16 header_protocol = 1; /* ethernet */
+	SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_SAMPLE_GROUP, ps_group);
+	SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_IIFINDEX, sample.input_if_index);
+	SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_OIFINDEX, sample.output_if_index);
+	SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_ORIGSIZE, sample.sampled_packet_size);
+	SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_GROUP_SEQ, seqNo);
+	SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_SAMPLE_RATE, sample.samplingN);
+	SFLOWPSSpec_setAttr(&spec, SFLOWPS_PSAMPLE_ATTR_DATA, sample.header, sample.header_bytes);
+	SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_PROTO, header_protocol);
+	psample_send++;
+	if (SFLOWPSSpec_send(&smp->sflow_psample, &spec) < 0)
+	  psample_send_fail++;
+      }
+    }
+    // clib_warning("process_samples: sent=%u failed=%u\n", psample_send, psample_send_fail);
+    if(psample_send == 0) {
+      // nothing found on FIFOs this time through, so terminate batch early	
+      break;
+    }
+    else {
+      vlib_node_increment_counter (smp->vlib_main, sflow_node.index, SFLOW_ERROR_PSAMPLE_SEND, psample_send);
+      if (psample_send_fail>0) {
+	vlib_node_increment_counter (smp->vlib_main, sflow_node.index, SFLOW_ERROR_PSAMPLE_SEND_FAIL, psample_send_fail);
+	smp->psample_send_drops += psample_send_fail;
+      }
+    }
+  }
+  return batch;
+}
+  
 static uword
 sflow_process_samples(vlib_main_t *vm, vlib_node_runtime_t *node,
 		  vlib_frame_t *frame) {
@@ -237,87 +444,14 @@ sflow_process_samples(vlib_main_t *vm, vlib_node_runtime_t *node,
       // second rollover
       smp->now_mono_S = tnow_S;
       // send status info
-      SFLOWUSSpec spec = {};
-      SFLOWUSSpec_setMsgType(&spec, SFLOW_VPP_MSG_STATUS);
-      SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_UPTIME_S, smp->now_mono_S);
-      
-      // sum sendmsg and worker-fifo drops
-      u32 all_pipeline_drops = smp->psample_send_drops;
-      for(u32 thread_index = 0; thread_index < smp->total_threads; thread_index++) {
-	sflow_per_thread_data_t *sfwk = vec_elt_at_index(smp->per_thread_data, thread_index);
-	all_pipeline_drops += sfwk->drop;
-      }
-      SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_DROPS, all_pipeline_drops);
-
-      SFLOWUSSpec_send(&smp->sflow_usersock, &spec);
-      // see if we should poll one or more interfaces
-      for(int ii = 0; ii < vec_len(smp->main_per_interface_data); ii++) {
-	sflow_main_per_interface_data_t *sfif = vec_elt_at_index(smp->main_per_interface_data, ii);
-	if(sfif
-	   && sfif->sflow_enabled
-	   && (smp->now_mono_S % smp->pollingS) == (sfif->hw_if_index % smp->pollingS)) {
-	  update_counters(smp, sfif);
-	}
-      }
+      send_sampling_status_info(smp);
+      // poll counters for interfaces that are due
+      counter_polling_check(smp);
+      // get linux if_index numbers (where applicable)
+      read_linux_if_index_numbers(smp);
     }
-
-    // TODO: how many should we be prepared to read here?
-    // Our maximum samples/sec is approximately:
-    // (SFLOW_READ_BATCH * smp->total_threads) / SFLOW_POLL_WAIT_S
-    // but it may also be affected by SFLOW_FIFO_DEPTH
-    // and whether vlib_process_wait_for_event_or_clock() really waits for
-    // SFLOW_POLL_WAIT_S every time.
-    // If there are too many samples then dropping them as early as possible
-    // (and as randomly as possible) is preferred, so SFLOW_FIFO_DEPTH should not
-    // be any bigger than it strictly needs to be. If there is a system bottleneck
-    // it could be in the PSAMPLE netlink channel, the hsflowd encoder, the
-    // UDP stack, the network path, the collector, or a faraway application.
-    // Any kind of "clipping" will result in systematic bias so we try to make
-    // this fair even when it's running hot. For example, we'll round-robin the
-    // thread FIFO dequeues here to avoid bias. It's important to give them
-    // equal access to the PSAMPLE channel.
-    for(u32 batch = 0; batch < SFLOW_READ_BATCH; batch++) {
-      u32 psample_send = 0, psample_send_fail = 0;
-      for(u32 thread_index = 0; thread_index < smp->total_threads; thread_index++) {
-	sflow_per_thread_data_t *sfwk = vec_elt_at_index(smp->per_thread_data, thread_index);
-	// TODO: dequeue and write multiple samples at a time
-	sflow_sample_t sample;
-	if(sflow_fifo_dequeue(&sfwk->fifo, &sample)) {
-	  if(sample.header_bytes > smp->header_bytes) {
-	    clib_warning("sample.header_bytes too big: %u\n", sample.header_bytes);
-	    continue;
-	  }
-	  SFLOWPSSpec spec = {};
-	  u32 ps_group = SFLOW_VPP_PSAMPLE_GROUP_INGRESS;
-	  u32 seqNo = ++smp->psample_seq_ingress;
-	  // TODO: is it always ethernet? (affects ifType counter as well)
-	  u16 header_protocol = 1; /* ethernet */
-	  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_SAMPLE_GROUP, ps_group);
-	  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_IIFINDEX, sample.input_if_index);
-	  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_OIFINDEX, sample.output_if_index);
-	  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_ORIGSIZE, sample.sampled_packet_size);
-	  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_GROUP_SEQ, seqNo);
-	  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_SAMPLE_RATE, sample.samplingN);
-	  SFLOWPSSpec_setAttr(&spec, SFLOWPS_PSAMPLE_ATTR_DATA, sample.header, sample.header_bytes);
-	  SFLOWPSSpec_setAttrInt(&spec, SFLOWPS_PSAMPLE_ATTR_PROTO, header_protocol);
-	  psample_send++;
-	  if (SFLOWPSSpec_send(&smp->sflow_psample, &spec) < 0)
-	    psample_send_fail++;
-	}
-      }
-      // clib_warning("process_samples: sent=%u failed=%u\n", psample_send, psample_send_fail);
-      if(psample_send == 0) {
-	// nothing found on FIFOs this time through, so terminate batch early	
-	break;
-      }
-      else {
-	vlib_node_increment_counter (smp->vlib_main, sflow_node.index, SFLOW_ERROR_PSAMPLE_SEND, psample_send);
-	if (psample_send_fail>0) {
-	  vlib_node_increment_counter (smp->vlib_main, sflow_node.index, SFLOW_ERROR_PSAMPLE_SEND_FAIL, psample_send_fail);
-	  smp->psample_send_drops += psample_send_fail;
-	}
-      }
-    }
+    // process samples from workers
+    read_worker_fifos(smp);
   }
   return 0;
 }
@@ -350,6 +484,7 @@ static void sflow_set_worker_sampling_state(sflow_main_t *smp) {
 
 static void sflow_sampling_start(sflow_main_t *smp) {
   clib_warning("sflow_sampling_start");
+  
   smp->running = 1;
   // Reset this clock so that the per-second netlink status updates
   // will communicate a restart to hsflowd.  This helps to distinguish:

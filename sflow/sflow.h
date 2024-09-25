@@ -121,14 +121,12 @@ typedef struct {
   sflow_fifo_t fifo;
 } sflow_per_thread_data_t;
 
-/* private to main thread
-   TODO: assuming polling is also moved to main thread */
+/* private to main thread */
 typedef struct {
   u32 sw_if_index;
   u32 hw_if_index;
   u32 linux_if_index;
   int sflow_enabled;
-  // TODO: possibly keep cache of counter index numbers here?
 } sflow_main_per_interface_data_t;
 
 typedef struct {
@@ -168,6 +166,11 @@ typedef struct {
   u32 psample_seq_egress;
   u32 psample_send_drops;
 
+  /* vapi query thread (transient) */
+  pthread_t vapi_thread;
+  void *vapi_rtn;
+  sflow_main_per_interface_data_t *vapi_itfs;
+  
 } sflow_main_t;
 
 extern sflow_main_t sflow_main;

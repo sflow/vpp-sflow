@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+include_directories(${CMAKE_SOURCE_DIR}/vpp-api ${CMAKE_CURRENT_BINARY_DIR}/../../vpp-api)
 add_vpp_plugin(sflow
   SOURCES
   sflow.c
@@ -34,4 +35,5 @@ add_vpp_plugin(sflow
 
   LINK_LIBRARIES
   vppapiclient
+  vapiclient
 )
