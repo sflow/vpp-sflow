@@ -28,6 +28,7 @@
 #define SFLOW_DEFAULT_POLLING_S 20
 #define SFLOW_DEFAULT_HEADER_BYTES 128
 #define SFLOW_MAX_HEADER_BYTES 256
+#define SFLOW_VAPI_POLL_INTERVAL 5
 
 //#define SFLOW_TEST_SHORT_FIFO 1
 #ifdef SFLOW_TEST_SHORT_FIFO
@@ -44,6 +45,8 @@
 #define SFLOW_POLL_WAIT_S 0.001
 #define SFLOW_READ_BATCH 100
 #endif
+
+// #define SFLOW_TEST_HAMMER_VAPI
 
 // use PSAMPLE group number to distinguish VPP samples from others
 // (so that hsflowd will know to remap the ifIndex numbers if necessary)
@@ -126,6 +129,7 @@ typedef struct {
   u32 sw_if_index;
   u32 hw_if_index;
   u32 linux_if_index;
+  u32 polled;
   int sflow_enabled;
 } sflow_main_per_interface_data_t;
 
@@ -166,11 +170,13 @@ typedef struct {
   u32 psample_seq_egress;
   u32 psample_send_drops;
 
-  /* vapi query thread (transient) */
+  /* vapi query helper thread (transient) */
+  CLIB_CACHE_LINE_ALIGN_MARK(_vapi);
+  volatile int vapi_request_active; // to sync main <-> vapi_thread
   pthread_t vapi_thread;
   sflow_main_per_interface_data_t *vapi_itfs;
-  int vapi_request_active;
-  int vapi_request_status;
+  int vapi_request_status; // written by vapi_thread
+  int vapi_requests;
 } sflow_main_t;
 
 extern sflow_main_t sflow_main;

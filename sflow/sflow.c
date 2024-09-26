@@ -57,10 +57,9 @@ my_pair_get_cb(struct vapi_ctx_s *ctx,
 	       vapi_error_e rv,
 	       bool is_last,
 	       vapi_payload_lcp_itf_pair_get_v2_reply *reply) {
-  sflow_main_per_interface_data_t *sfif = (sflow_main_per_interface_data_t *)callback_ctx;
-  // We get here if there is no corresponding Linux interface, so clear it.
-  sfif->linux_if_index = 0;
-  clib_warning("my_pair_get_cb, rv=%d, sw_if_index=%d\n", rv, sfif->sw_if_index);
+  // this is a no-op, but it seems like it's presence is still required.
+  // sflow_main_per_interface_data_t *sfif = (sflow_main_per_interface_data_t *)callback_ctx;
+  // clib_warning("my_pair_get_cb, rv=%d, sw_if_index=%d\n", rv, sfif->sw_if_index);
   return 0;
 }
 
@@ -72,8 +71,9 @@ my_pair_details_cb(struct vapi_ctx_s *ctx,
 		   vapi_payload_lcp_itf_pair_details *details) {
   sflow_main_per_interface_data_t *sfif = (sflow_main_per_interface_data_t *)callback_ctx;
   // Setting this here will mean it is sent to hsflowd with the interface counters.
-  sfif->linux_if_index = details->vif_index; // TODO: or is it details->host_if_index?
-  clib_warning("my_pair_details_cb, rv=%d, sw_if_index=%d\n", rv, sfif->sw_if_index);
+  sfif->linux_if_index = details->vif_index;
+  clib_warning("my_pair_details_cb, rv=%d, sw_if_index=%d, linux_if_index=%d\n",
+	       rv, sfif->sw_if_index, sfif->linux_if_index);
   return 0;
 }  
 
@@ -98,7 +98,9 @@ static void *get_lcp_itf_pairs(void *magic) {
 	  vapi_msg_lcp_itf_pair_get_v2 *msg = vapi_alloc_lcp_itf_pair_get_v2(ctx);
 	  if(msg) {
 	    msg->payload.sw_if_index = sfif->sw_if_index;
-	    if((rv = vapi_lcp_itf_pair_get_v2(ctx, msg, my_pair_get_cb, sfif, my_pair_details_cb, sfif)) != VAPI_OK) {
+	    if((rv = vapi_lcp_itf_pair_get_v2(ctx, msg,
+					      my_pair_get_cb, sfif,
+					      my_pair_details_cb, sfif)) != VAPI_OK) {
 	      clib_warning("vapi_lcp_itf_pair_get_v2 returned %d", rv);
 	    }
 	  }
@@ -110,7 +112,7 @@ static void *get_lcp_itf_pairs(void *magic) {
   }
   // indicate that we are done - more portable that using pthread_tryjoin_np()
   smp->vapi_request_status = (int)rv;
-  smp->vapi_request_active = false;
+  clib_atomic_store_rel_n(&smp->vapi_request_active, false);
   return (void *)rv;
 }
 
@@ -287,13 +289,14 @@ static void update_counters(sflow_main_t *smp, sflow_main_per_interface_data_t *
 
 static int
 read_linux_if_index_numbers(sflow_main_t *smp) {
-  // get linux if_index numbers where applicable.
   // Don't even try if the linux-cp plugin is not loaded
+  // TODO: find a better way to ask if the plugin is loaded
   if(vlib_get_plugin_symbol("linux_cp_plugin.so", "lcp_itf_pair_get")) {
-    // first confirm that the previous query is done
-    if(smp->vapi_itfs == NULL
-       || smp->vapi_request_active == false) {
-      // OK to proceed - make a copy of the current interfaces vector...
+    // previous query is done and results extracted?
+    int req_active = clib_atomic_load_acq_n(&smp->vapi_request_active);
+    if(req_active == false
+       && smp->vapi_itfs == NULL) {
+      // make a copy of the current interfaces vector...
       if(smp->vapi_itfs)
 	vec_free(smp->vapi_itfs);
       smp->vapi_itfs = vec_dup(smp->main_per_interface_data);
@@ -306,8 +309,35 @@ read_linux_if_index_numbers(sflow_main_t *smp) {
       // We get here if the lookup is slow or is deadlocked. Which can happen if
       // there is no handler for the request we sent. Much better to be stuck
       // here than to risk stalling the main thread.
+#ifndef SFLOW_TEST_HAMMER_VAPI
       clib_warning("vapi_thread request still waiting");
+#endif
     }
+  }
+  return false;
+}
+
+static int
+check_for_linux_if_index_results(sflow_main_t *smp) {
+  // request completed?
+  int req_active = clib_atomic_load_acq_n(&smp->vapi_request_active);
+  if(req_active == false
+     && smp->vapi_itfs != NULL) {
+    // yes, extract what we learned
+    // TODO: would not have to do this if vector were array of pointers
+    // to sflow_main_per_interface_data_t rather than an actual array, but
+    // it does mean we have very clear separation between the threads.
+    for(int ii = 0; ii < vec_len(smp->vapi_itfs); ii++) {
+      sflow_main_per_interface_data_t *sfif1 = vec_elt_at_index(smp->vapi_itfs, ii);
+      sflow_main_per_interface_data_t *sfif2 = vec_elt_at_index(smp->main_per_interface_data, ii);
+      if(sfif1
+	 && sfif2
+	 && sfif1->sflow_enabled
+	 && sfif2->sflow_enabled)
+	sfif2->linux_if_index = sfif1->linux_if_index;
+    }
+    vec_free(smp->vapi_itfs);
+    return true;
   }
   return false;
 }
@@ -335,8 +365,10 @@ counter_polling_check(sflow_main_t *smp) {
     sflow_main_per_interface_data_t *sfif = vec_elt_at_index(smp->main_per_interface_data, ii);
     if(sfif
        && sfif->sflow_enabled
-       && (smp->now_mono_S % smp->pollingS) == (sfif->hw_if_index % smp->pollingS)) {
+       && (sfif->polled == 0 // always send the first time
+	   || (smp->now_mono_S % smp->pollingS) == (sfif->hw_if_index % smp->pollingS))) {
       update_counters(smp, sfif);
+      sfif->polled++;
       polled++;
     }
   }
@@ -345,7 +377,6 @@ counter_polling_check(sflow_main_t *smp) {
 
 static u32
 read_worker_fifos(sflow_main_t *smp) {
-  // TODO: how many should we be prepared to read here?
   // Our maximum samples/sec is approximately:
   // (SFLOW_READ_BATCH * smp->total_threads) / SFLOW_POLL_WAIT_S
   // but it may also be affected by SFLOW_FIFO_DEPTH
@@ -358,8 +389,18 @@ read_worker_fifos(sflow_main_t *smp) {
   // UDP stack, the network path, the collector, or a faraway application.
   // Any kind of "clipping" will result in systematic bias so we try to make
   // this fair even when it's running hot. For example, we'll round-robin the
-  // thread FIFO dequeues here to avoid bias. It's important to give them
-  // equal access to the PSAMPLE channel.
+  // thread FIFO dequeues here to make sure we give them equal access to the
+  // PSAMPLE channel.
+  // Another factor in sizing SFLOW_FIFO_DEPTH is to ensure that we can absorb
+  // a short-term line-rate burst without dropping samples. This implies a
+  // deeper FIFO. In fact it looks like this requirement ends up being the
+  // dominant one. A value of SFLOW_FIFO_DEPTH that will absorb an n-second
+  // line-rate burst may well result in the max sustainable samples/sec being
+  // higher than we really need. But it's not a serious problem because the
+  // samples are packed into UDP datagrams and the network or collector can
+  // drop those anywhere they need to. The protocol is designed to be tolerant
+  // to random packet-loss in transit. For example, 1% loss should just make
+  // it look like the sampling-rate setting was 1:10100 instead of 1:10000.
   u32 batch = 0;
   for(; batch < SFLOW_READ_BATCH; batch++) {
     u32 psample_send = 0, psample_send_fail = 0;
@@ -425,6 +466,11 @@ sflow_process_samples(vlib_main_t *vm, vlib_node_runtime_t *node,
       continue;
     }
 
+#ifdef SFLOW_TEST_HAMMER_VAPI
+    check_for_linux_if_index_results(smp);
+    read_linux_if_index_numbers(smp);
+#endif
+
     // PSAMPLE channel may need extra step (e.g. to learn family_id)
     // before it is ready to send
     EnumSFLOWPSState psState = SFLOWPS_state(&smp->sflow_psample);
@@ -440,12 +486,17 @@ sflow_process_samples(vlib_main_t *vm, vlib_node_runtime_t *node,
     if(tnow_S != smp->now_mono_S) {
       // second rollover
       smp->now_mono_S = tnow_S;
+      // look up linux if_index numbers
+      check_for_linux_if_index_results(smp);
+      if(smp->vapi_requests == 0
+	 || (tnow_S % SFLOW_VAPI_POLL_INTERVAL) == 0) {
+	read_linux_if_index_numbers(smp);
+	smp->vapi_requests++;
+      }
       // send status info
       send_sampling_status_info(smp);
       // poll counters for interfaces that are due
       counter_polling_check(smp);
-      // get linux if_index numbers (where applicable)
-      read_linux_if_index_numbers(smp);
     }
     // process samples from workers
     read_worker_fifos(smp);
@@ -493,7 +544,10 @@ static void sflow_sampling_start(sflow_main_t *smp) {
   smp->psample_seq_ingress = 0;
   smp->psample_seq_egress = 0;
   smp->psample_send_drops = 0;
-  
+
+  // reset vapi request count so that we make a request the first time
+  smp->vapi_requests = 0;
+
   /* open PSAMPLE netlink channel for writing packet samples */
   SFLOWPS_open(&smp->sflow_psample);
   /* open USERSOCK netlink channel for writing counters */
@@ -584,6 +638,7 @@ int sflow_enable_disable (sflow_main_t * smp, u32 sw_if_index, int enable_disabl
     // OK, turn it on/off
     sfif->sw_if_index = sw_if_index;
     sfif->hw_if_index = sw->hw_if_index;
+    sfif->polled = 0;
     // TODO: send vapi request to learn sfif->linux_if_index here?
     sfif->sflow_enabled = enable_disable;
     vnet_feature_enable_disable ("device-input", "sflow", sw_if_index, enable_disable, 0, 0);
