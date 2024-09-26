@@ -51,6 +51,7 @@ DEFINE_VAPI_MSG_IDS_LCP_API_JSON;
 
 sflow_main_t sflow_main;
 
+#ifdef SFLOW_USE_VAPI
 static vapi_error_e
 my_pair_get_cb(struct vapi_ctx_s *ctx,
 	       void *callback_ctx,
@@ -60,7 +61,7 @@ my_pair_get_cb(struct vapi_ctx_s *ctx,
   // this is a no-op, but it seems like it's presence is still required.
   // sflow_main_per_interface_data_t *sfif = (sflow_main_per_interface_data_t *)callback_ctx;
   // clib_warning("my_pair_get_cb, rv=%d, sw_if_index=%d\n", rv, sfif->sw_if_index);
-  return 0;
+  return VAPI_OK;
 }
 
 static vapi_error_e
@@ -74,14 +75,14 @@ my_pair_details_cb(struct vapi_ctx_s *ctx,
   sfif->linux_if_index = details->vif_index;
   clib_warning("my_pair_details_cb, rv=%d, sw_if_index=%d, linux_if_index=%d\n",
 	       rv, sfif->sw_if_index, sfif->linux_if_index);
-  return 0;
+  return VAPI_OK;
 }  
 
 // in forked thread
 static void *get_lcp_itf_pairs(void *magic) {
   sflow_main_t *smp = magic;
   sflow_main_per_interface_data_t *intfs = smp->vapi_itfs;
-  vapi_ctx_t ctx;
+  vapi_ctx_t ctx = NULL;
   vapi_error_e rv;
   if((rv = vapi_ctx_alloc(&ctx)) != VAPI_OK) {
     clib_warning("vap_ctx_alloc() returned %d", rv);
@@ -95,6 +96,7 @@ static void *get_lcp_itf_pairs(void *magic) {
 	sflow_main_per_interface_data_t *sfif = vec_elt_at_index(intfs, ii);
 	if(sfif
 	   && sfif->sflow_enabled) {
+	  continue; // try not sending anything
 	  vapi_msg_lcp_itf_pair_get_v2 *msg = vapi_alloc_lcp_itf_pair_get_v2(ctx);
 	  if(msg) {
 	    msg->payload.sw_if_index = sfif->sw_if_index;
@@ -102,7 +104,12 @@ static void *get_lcp_itf_pairs(void *magic) {
 					      my_pair_get_cb, sfif,
 					      my_pair_details_cb, sfif)) != VAPI_OK) {
 	      clib_warning("vapi_lcp_itf_pair_get_v2 returned %d", rv);
+	      // should probably vapi_msg_free(ctx, msg); here
 	    }
+	    // vapi.h says:
+	    // "message must be freed by vapi_msg_free if not consumed by vapi_send"
+	    // so do not free here (causes SIGSEGV)
+	    // vapi_msg_free(ctx, msg);
 	  }
 	}
       }
@@ -115,6 +122,7 @@ static void *get_lcp_itf_pairs(void *magic) {
   clib_atomic_store_rel_n(&smp->vapi_request_active, false);
   return (void *)rv;
 }
+#endif // SFLOW_USE_VAPI
 
 static void
 sflow_stat_segment_client_init (void)
@@ -287,18 +295,23 @@ static void update_counters(sflow_main_t *smp, sflow_main_per_interface_data_t *
   SFLOWUSSpec_send(&smp->sflow_usersock, &spec);
 }
 
+#ifdef SFLOW_USE_VAPI
+
 static int
 read_linux_if_index_numbers(sflow_main_t *smp) {
   // Don't even try if the linux-cp plugin is not loaded
-  // TODO: find a better way to ask if the plugin is loaded
+  // TODO: find a better way to ask if the plugin is loaded and the
+  // VAPI request will work.
+  // For example, might be better to test:
+  // if(vapi_is_msg_available(ctx, vapi_msg_id_lcp_itf_pair_add_del_v2))
+  // but that can only be done after we have connected.
+
   if(vlib_get_plugin_symbol("linux_cp_plugin.so", "lcp_itf_pair_get")) {
     // previous query is done and results extracted?
     int req_active = clib_atomic_load_acq_n(&smp->vapi_request_active);
     if(req_active == false
        && smp->vapi_itfs == NULL) {
       // make a copy of the current interfaces vector...
-      if(smp->vapi_itfs)
-	vec_free(smp->vapi_itfs);
       smp->vapi_itfs = vec_dup(smp->main_per_interface_data);
       // ...and give it to the lookup
       smp->vapi_request_active = true;
@@ -341,6 +354,7 @@ check_for_linux_if_index_results(sflow_main_t *smp) {
   }
   return false;
 }
+#endif // SFLOW_USE_VAPI
 
 static void
 send_sampling_status_info(sflow_main_t *smp) {
@@ -466,9 +480,11 @@ sflow_process_samples(vlib_main_t *vm, vlib_node_runtime_t *node,
       continue;
     }
 
+#ifdef SFLOW_USE_VAPI
 #ifdef SFLOW_TEST_HAMMER_VAPI
     check_for_linux_if_index_results(smp);
     read_linux_if_index_numbers(smp);
+#endif
 #endif
 
     // PSAMPLE channel may need extra step (e.g. to learn family_id)
@@ -486,6 +502,7 @@ sflow_process_samples(vlib_main_t *vm, vlib_node_runtime_t *node,
     if(tnow_S != smp->now_mono_S) {
       // second rollover
       smp->now_mono_S = tnow_S;
+#ifdef SFLOW_USE_VAPI
       // look up linux if_index numbers
       check_for_linux_if_index_results(smp);
       if(smp->vapi_requests == 0
@@ -493,6 +510,7 @@ sflow_process_samples(vlib_main_t *vm, vlib_node_runtime_t *node,
 	read_linux_if_index_numbers(smp);
 	smp->vapi_requests++;
       }
+#endif
       // send status info
       send_sampling_status_info(smp);
       // poll counters for interfaces that are due
