@@ -46,8 +46,7 @@
 #define SFLOW_READ_BATCH 100
 #endif
 
-// VAPI lookups currently turned off because of memory leak
-// #define SFLOW_USE_VAPI
+#define SFLOW_USE_VAPI
 // #define SFLOW_TEST_HAMMER_VAPI
 
 // use PSAMPLE group number to distinguish VPP samples from others

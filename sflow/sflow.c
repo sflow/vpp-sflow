@@ -96,7 +96,6 @@ static void *get_lcp_itf_pairs(void *magic) {
 	sflow_main_per_interface_data_t *sfif = vec_elt_at_index(intfs, ii);
 	if(sfif
 	   && sfif->sflow_enabled) {
-	  continue; // try not sending anything
 	  vapi_msg_lcp_itf_pair_get_v2 *msg = vapi_alloc_lcp_itf_pair_get_v2(ctx);
 	  if(msg) {
 	    msg->payload.sw_if_index = sfif->sw_if_index;
@@ -120,6 +119,7 @@ static void *get_lcp_itf_pairs(void *magic) {
   // indicate that we are done - more portable that using pthread_tryjoin_np()
   smp->vapi_request_status = (int)rv;
   clib_atomic_store_rel_n(&smp->vapi_request_active, false);
+  pthread_detach(pthread_self());
   return (void *)rv;
 }
 #endif // SFLOW_USE_VAPI
@@ -305,7 +305,6 @@ read_linux_if_index_numbers(sflow_main_t *smp) {
   // For example, might be better to test:
   // if(vapi_is_msg_available(ctx, vapi_msg_id_lcp_itf_pair_add_del_v2))
   // but that can only be done after we have connected.
-
   if(vlib_get_plugin_symbol("linux_cp_plugin.so", "lcp_itf_pair_get")) {
     // previous query is done and results extracted?
     int req_active = clib_atomic_load_acq_n(&smp->vapi_request_active);
