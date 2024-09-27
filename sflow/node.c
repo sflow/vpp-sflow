@@ -21,7 +21,7 @@
 
 // different logging options
 //#define SFLOW_LOG_CYCLES 1
-//#define SFLOW_LOG_SAMPLES 1  // will add to cycles
+//#define SFLOW_LOG_SAMPLES 1
 
 typedef struct 
 {
@@ -91,36 +91,22 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
 
   u32 pkts = n_left_from;
   if(sfwk->skip >= pkts) {
-    /* skip the whole frame */
+    /* skip the whole frame-vector */
     sfwk->skip -= pkts;
     sfwk->pool += pkts;
-    // clib_warning("sflow frame skip->%u", sfwk->skip);
   }
   else {
-    // TODO: if we simply refuse to sample more than one packet from
-    // a batch does it avoid destabilizing VPP under high load?  A
-    // minimum skip count is allowed in sFlow. Which translates to
-    // a minimum sampling-rate setting of, say, minimum skip count * 2
-    // so that there is still some random variation. If we require it to
-    // be the batch size then we won't ever have to loop here and
-    // "while" becomes "if". Obviously we would enforce a min-skip
-    // in sflow.c at config time, but perhaps we end up with an override like
-    // the Arista one "sflow enable GigabitEthernet0/8/0 dangerous 1"
-    // so that 1:1 can still be set if you know what you are doing :)
     while(pkts > sfwk->skip) {
 #ifdef SFLOW_LOG_CYCLES
       u64 cycles1 = clib_cpu_time_now();
 #endif
       /* reach in to get the one we want. */
       vlib_buffer_t *bN = vlib_get_buffer (vm, from[sfwk->skip]);
-      /* Seems unlikely that prefetch is going to help here. */
-      // vlib_prefetch_buffer_header(bN, LOAD);
-      // CLIB_PREFETCH(bN->data, CLIB_CACHE_LINE_BYTES, STORE);
 
       /* Sample this packet header. */
       u32 hdr = bN->current_length;
-      if(hdr > smp->header_bytes)
-	hdr = smp->header_bytes;
+      if(hdr > smp->headerB)
+	hdr = smp->headerB;
 
       ethernet_header_t *en = vlib_buffer_get_current (bN);
       u32 if_index = vnet_buffer(bN)->sw_if_index[VLIB_RX];
@@ -131,6 +117,7 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
 	// TODO: can we get interfaces that have no hw interface?
 	// If so,  should we ignore the sample?
       }
+      
 #ifdef SFLOW_LOG_SAMPLES
       clib_warning("sflow take sample if_index=%u len=%u en->src_address=%02x:%02x:%02x:%02x:%02x:%02x",
       		   if_index,
@@ -142,9 +129,7 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
       		   en->src_address[4],
       		   en->src_address[5]);
 #endif
-      /* copy to the PSAMPLE generic netlink channel (via the main thread
-       * so that we don't stall the worker thread on a system call).
-       */
+      
       sflow_sample_t sample = {
 	.samplingN = sfwk->smpN,
 	.input_if_index = if_index,
@@ -152,24 +137,30 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
 	.header_bytes = hdr
       };
       pkts_sampled++;
-      
-      //clib_warning("sflow hw if_index = %u, rpc_queue_depth=%u",
-      //		     hw->hw_if_index,
-      //		     vec_len(vm->pending_rpc_requests));
+
+      // TODO: we end up copying the header twice here. Consider allowing the
+      // enqueue to be just a little more complex.  Like this:
+      // if(!sflow_fifo_enqueue(&sfwk->fifo, &sample, en, hdr).
+      // With headerB==128 that would be memcpy(,,24) plus memcpy(,,128)
+      // instead of the memcpy(,,128) plus memcpy(,,24+256) that we do here.
+      // (We also know that it could be done as a multiple of 8 (aligned) bytes
+      // because the sflow_sample_t fields are (6xu32) and the headerB setting
+      // is quantized to the nearest 32 bytes, so there may be ways to make it
+      // even easier for the compiler.)
       memcpy(sample.header, en, hdr);
-      // TODO: adjust size (though it might be just as fast to always copy sizeof(sflow_sample_t) bytes)
-      
       if(!sflow_fifo_enqueue(&sfwk->fifo, &sample))
 	pkts_dropped++;
       
       pkts -= sfwk->skip;
       sfwk->pool += sfwk->skip;
       sfwk->skip = sflow_next_random_skip(sfwk);
+      
 #ifdef SFLOW_LOG_CYCLES
       uint64_t cycles2 = clib_cpu_time_now();
       clib_warning("sample cycles = %u", (cycles2 - cycles1));
       vlib_node_increment_counter (vm, sflow_node.index, SFLOW_ERROR_CYCLES, (cycles2-cycles1));
 #endif
+      
     }
   }
 
@@ -266,8 +257,6 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
       vlib_buffer_t * b0;
       u32 next0 = SFLOW_NEXT_ETHERNET_INPUT;
       ethernet_header_t *en0;
-
-      // clib_warning("Loop one-at-a-time: %u next0=%u", n_left_from, next0);
 
       /* speculatively enqueue b0 to the current next frame */
       bi0 = from[0];

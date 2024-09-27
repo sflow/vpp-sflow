@@ -107,6 +107,7 @@ static int api_sflow_sampling_rate (vat_main_t * vam)
   W (ret);
   return ret;
 }
+
 static int api_sflow_polling_interval (vat_main_t * vam)
 {
   unformat_input_t * i = vam->input;
@@ -132,6 +133,40 @@ static int api_sflow_polling_interval (vat_main_t * vam)
   /* Construct the API message */
   M(SFLOW_POLLING_INTERVAL, mp);
   mp->polling_S = ntohl (polling_S);
+
+  /* send it... */
+  S(mp);
+
+  /* Wait for a reply... */
+  W (ret);
+  return ret;
+}
+
+static int api_sflow_header_bytes (vat_main_t * vam)
+{
+  unformat_input_t * i = vam->input;
+  u32 header_B = ~0;
+  vl_api_sflow_header_bytes_t * mp;
+  int ret;
+  
+  /* Parse args required to build the message */
+  while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (i, "header_B %d", &header_B))
+	;
+      else
+	break;
+    }
+  
+  if (header_B == ~0)
+    {
+      errmsg ("missing header_B number \n");
+      return -99;
+    }
+  
+  /* Construct the API message */
+  M(SFLOW_HEADER_BYTES, mp);
+  mp->header_B = ntohl (header_B);
 
   /* send it... */
   S(mp);

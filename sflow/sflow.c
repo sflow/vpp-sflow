@@ -52,6 +52,9 @@ DEFINE_VAPI_MSG_IDS_LCP_API_JSON;
 sflow_main_t sflow_main;
 
 #ifdef SFLOW_USE_VAPI
+
+#ifndef SFLOW_TEST_NOOP_VAPI
+
 static vapi_error_e
 my_pair_get_cb(struct vapi_ctx_s *ctx,
 	       void *callback_ctx,
@@ -73,17 +76,21 @@ my_pair_details_cb(struct vapi_ctx_s *ctx,
   sflow_main_per_interface_data_t *sfif = (sflow_main_per_interface_data_t *)callback_ctx;
   // Setting this here will mean it is sent to hsflowd with the interface counters.
   sfif->linux_if_index = details->vif_index;
-  clib_warning("my_pair_details_cb, rv=%d, sw_if_index=%d, linux_if_index=%d\n",
-	       rv, sfif->sw_if_index, sfif->linux_if_index);
+  //  clib_warning("my_pair_details_cb, rv=%d, sw_if_index=%d, linux_if_index=%d\n", rv, sfif->sw_if_index, sfif->linux_if_index);
   return VAPI_OK;
 }  
+#endif // SFLOW_TEST_NOOP_VAPI
 
 // in forked thread
 static void *get_lcp_itf_pairs(void *magic) {
   sflow_main_t *smp = magic;
+  vapi_error_e rv = VAPI_OK;
+
+#ifndef SFLOW_TEST_NOOP_VAPI
   sflow_main_per_interface_data_t *intfs = smp->vapi_itfs;
+  vlib_set_thread_name(SFLOW_VAPI_THREAD_NAME);
   vapi_ctx_t ctx = NULL;
-  vapi_error_e rv;
+
   if((rv = vapi_ctx_alloc(&ctx)) != VAPI_OK) {
     clib_warning("vap_ctx_alloc() returned %d", rv);
   }
@@ -103,12 +110,9 @@ static void *get_lcp_itf_pairs(void *magic) {
 					      my_pair_get_cb, sfif,
 					      my_pair_details_cb, sfif)) != VAPI_OK) {
 	      clib_warning("vapi_lcp_itf_pair_get_v2 returned %d", rv);
-	      // should probably vapi_msg_free(ctx, msg); here
+	      // vapi.h: "message must be freed by vapi_msg_free if not consumed by vapi_send"
+	      vapi_msg_free(ctx, msg);
 	    }
-	    // vapi.h says:
-	    // "message must be freed by vapi_msg_free if not consumed by vapi_send"
-	    // so do not free here (causes SIGSEGV)
-	    // vapi_msg_free(ctx, msg);
 	  }
 	}
       }
@@ -116,12 +120,14 @@ static void *get_lcp_itf_pairs(void *magic) {
     }
     vapi_ctx_free (ctx);
   }
+#endif // SFLOW_TEST_NOOP_VAPI
+
   // indicate that we are done - more portable that using pthread_tryjoin_np()
   smp->vapi_request_status = (int)rv;
   clib_atomic_store_rel_n(&smp->vapi_request_active, false);
-  pthread_detach(pthread_self());
-  return (void *)rv;
+  return(void *)rv;
 }
+
 #endif // SFLOW_USE_VAPI
 
 static void
@@ -310,11 +316,15 @@ read_linux_if_index_numbers(sflow_main_t *smp) {
     int req_active = clib_atomic_load_acq_n(&smp->vapi_request_active);
     if(req_active == false
        && smp->vapi_itfs == NULL) {
-      // make a copy of the current interfaces vector...
+      // make a copy of the current interfaces vector for the lookup thread to write into
       smp->vapi_itfs = vec_dup(smp->main_per_interface_data);
-      // ...and give it to the lookup
+      pthread_attr_t attr;
+      pthread_attr_init(&attr);
+      pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+      pthread_attr_setstacksize(&attr, VLIB_THREAD_STACK_SIZE);
       smp->vapi_request_active = true;
-      pthread_create(&smp->vapi_thread, NULL, get_lcp_itf_pairs, smp);
+      pthread_create(&smp->vapi_thread, &attr, get_lcp_itf_pairs, smp);
+      pthread_attr_destroy(&attr);
       return true;
     }
     else {
@@ -422,7 +432,9 @@ read_worker_fifos(sflow_main_t *smp) {
       // TODO: dequeue and write multiple samples at a time
       sflow_sample_t sample;
       if(sflow_fifo_dequeue(&sfwk->fifo, &sample)) {
-	if(sample.header_bytes > smp->header_bytes) {
+	if(sample.header_bytes > smp->headerB) {
+	  // Get here if header-bytes setting is reduced dynamically and a sample
+	  // that was in the FIFO appears with a larger header.
 	  clib_warning("sample.header_bytes too big: %u\n", sample.header_bytes);
 	  continue;
 	}
@@ -597,6 +609,10 @@ static void sflow_sampling_start_stop(sflow_main_t *smp) {
 
 int sflow_sampling_rate (sflow_main_t * smp, u32 samplingN)
 {
+  // TODO: this might be the right place to enforce the
+  // "2 significant" figures constraint so that per-interface
+  // sampling-rate settings can use HCF+sub-sampling efficiently.
+  
   if(smp->running
      && smp->samplingN
      && samplingN) {
@@ -615,6 +631,24 @@ int sflow_sampling_rate (sflow_main_t * smp, u32 samplingN)
 int sflow_polling_interval (sflow_main_t * smp, u32 pollingS)
 {
   smp->pollingS = pollingS;
+  return 0;
+}
+
+int sflow_header_bytes (sflow_main_t * smp, u32 headerB)
+{
+  u32 hdrB = headerB;
+  // first round up to nearest multiple of SFLOW_HEADER_BYTES_STEP
+  // (which helps to make worker thread memcpy faster)
+  hdrB = ((hdrB + SFLOW_HEADER_BYTES_STEP -1) / SFLOW_HEADER_BYTES_STEP)
+    * SFLOW_HEADER_BYTES_STEP;
+  // then check max/min
+  if(hdrB < SFLOW_MIN_HEADER_BYTES)
+    hdrB = SFLOW_MIN_HEADER_BYTES;
+  if(hdrB > SFLOW_MAX_HEADER_BYTES)
+    hdrB = SFLOW_MAX_HEADER_BYTES;
+  if(hdrB != headerB)
+    clib_warning("header_bytes rounded from %u to %u\n", headerB, hdrB);
+  smp->headerB = hdrB;
   return 0;
 }
 
@@ -735,6 +769,40 @@ sflow_polling_interval_command_fn (vlib_main_t * vm,
 }
 
 static clib_error_t *
+sflow_header_bytes_command_fn (vlib_main_t * vm,
+			       unformat_input_t * input,
+			       vlib_cli_command_t * cmd)
+{
+  sflow_main_t * smp = &sflow_main;
+  u32 header_B = ~0;
+
+  int rv;
+
+  while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (input, "%u", &header_B))
+	;
+      else
+        break;
+    }
+  
+  if (header_B == ~0)
+    return clib_error_return (0, "Please specify a header bytes limit...");
+
+  rv = sflow_header_bytes (smp, header_B);
+
+  switch(rv)
+    {
+    case 0:
+      break;
+    default:
+      return clib_error_return (0, "sflow_header_bytes returned %d",
+				rv);
+    }
+  return 0;
+}
+
+static clib_error_t *
 sflow_enable_disable_command_fn (vlib_main_t * vm,
 				 unformat_input_t * input,
 				 vlib_cli_command_t * cmd)
@@ -803,6 +871,13 @@ VLIB_CLI_COMMAND (sflow_polling_interval_command, static) =
     .short_help = "sflow polling-interval <S>",
     .function = sflow_polling_interval_command_fn,
   };
+
+VLIB_CLI_COMMAND (sflow_header_bytes_command, static) =
+  {
+    .path = "sflow header-bytes",
+    .short_help = "sflow header-bytes <B>",
+    .function = sflow_header_bytes_command_fn,
+  };
 /* *INDENT-ON* */
 
 /* API message handler */
@@ -846,6 +921,19 @@ static void vl_api_sflow_polling_interval_t_handler
   REPLY_MACRO(VL_API_SFLOW_POLLING_INTERVAL_REPLY);
 }
 
+static void vl_api_sflow_header_bytes_t_handler
+(vl_api_sflow_header_bytes_t * mp)
+{
+  vl_api_sflow_header_bytes_reply_t * rmp;
+  sflow_main_t * smp = &sflow_main;
+  int rv;
+  
+  rv = sflow_header_bytes (smp,
+			   ntohl(mp->header_B));
+  
+  REPLY_MACRO(VL_API_SFLOW_HEADER_BYTES_REPLY);
+}
+
 /* API definitions */
 #include <sflow/sflow.api.c>
 
@@ -860,9 +948,7 @@ static clib_error_t * sflow_init (vlib_main_t * vm)
   /* set default sampling-rate and polling-interval so that "enable" is all that is necessary */
   smp->samplingN = SFLOW_DEFAULT_SAMPLING_N;
   smp->pollingS = SFLOW_DEFAULT_POLLING_S;
-  
-  /* TODO: make this a CLI parameter too */
-  smp->header_bytes = SFLOW_DEFAULT_HEADER_BYTES;
+  smp->headerB = SFLOW_DEFAULT_HEADER_BYTES;
 
   /* Add our API messages to the global name_crc hash table */
   smp->msg_id_base = setup_message_id_table ();

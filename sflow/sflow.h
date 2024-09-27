@@ -28,6 +28,8 @@
 #define SFLOW_DEFAULT_POLLING_S 20
 #define SFLOW_DEFAULT_HEADER_BYTES 128
 #define SFLOW_MAX_HEADER_BYTES 256
+#define SFLOW_MIN_HEADER_BYTES 64
+#define SFLOW_HEADER_BYTES_STEP 32
 #define SFLOW_VAPI_POLL_INTERVAL 5
 
 //#define SFLOW_TEST_SHORT_FIFO 1
@@ -47,7 +49,9 @@
 #endif
 
 #define SFLOW_USE_VAPI
+#define SFLOW_VAPI_THREAD_NAME "sflow_vapi" // must be <= 15 characters
 // #define SFLOW_TEST_HAMMER_VAPI
+//#define SFLOW_TEST_NOOP_VAPI
 
 // use PSAMPLE group number to distinguish VPP samples from others
 // (so that hsflowd will know to remap the ifIndex numbers if necessary)
@@ -146,7 +150,7 @@ typedef struct {
   /* sampling state */
   u32 samplingN;
   u32 pollingS;
-  u32 header_bytes;
+  u32 headerB;
   u32 total_threads;
   sflow_main_per_interface_data_t *main_per_interface_data;
   sflow_per_thread_data_t *per_thread_data;
