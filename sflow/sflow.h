@@ -48,10 +48,13 @@
 #define SFLOW_READ_BATCH 100
 #endif
 
-#define SFLOW_USE_VAPI
-#define SFLOW_VAPI_THREAD_NAME "sflow_vapi" // must be <= 15 characters
+// Disable this until we find the memory leak
+// #define SFLOW_USE_VAPI
+// #define SFLOW_VAPI_MAX_REQUEST_Q 8
+// #define SFLOW_VAPI_MAX_RESPONSE_Q 16
+// #define SFLOW_VAPI_THREAD_NAME "sflow_vapi" // must be <= 15 characters
 // #define SFLOW_TEST_HAMMER_VAPI
-//#define SFLOW_TEST_NOOP_VAPI
+// #define SFLOW_TEST_NOOP_VAPI
 
 // use PSAMPLE group number to distinguish VPP samples from others
 // (so that hsflowd will know to remap the ifIndex numbers if necessary)

@@ -61,9 +61,8 @@ my_pair_get_cb(struct vapi_ctx_s *ctx,
 	       vapi_error_e rv,
 	       bool is_last,
 	       vapi_payload_lcp_itf_pair_get_v2_reply *reply) {
-  // this is a no-op, but it seems like it's presence is still required.
-  // sflow_main_per_interface_data_t *sfif = (sflow_main_per_interface_data_t *)callback_ctx;
-  // clib_warning("my_pair_get_cb, rv=%d, sw_if_index=%d\n", rv, sfif->sw_if_index);
+  // this is a no-op, but it seems like it's presence is still required.  For example,
+  // it is called if the pair lookup does not find anything.
   return VAPI_OK;
 }
 
@@ -76,7 +75,6 @@ my_pair_details_cb(struct vapi_ctx_s *ctx,
   sflow_main_per_interface_data_t *sfif = (sflow_main_per_interface_data_t *)callback_ctx;
   // Setting this here will mean it is sent to hsflowd with the interface counters.
   sfif->linux_if_index = details->vif_index;
-  //  clib_warning("my_pair_details_cb, rv=%d, sw_if_index=%d, linux_if_index=%d\n", rv, sfif->sw_if_index, sfif->linux_if_index);
   return VAPI_OK;
 }  
 #endif // SFLOW_TEST_NOOP_VAPI
@@ -95,7 +93,12 @@ static void *get_lcp_itf_pairs(void *magic) {
     clib_warning("vap_ctx_alloc() returned %d", rv);
   }
   else {
-    if((rv = vapi_connect_from_vpp(ctx, "api_from_sflow_plugin", 64, 32, VAPI_MODE_BLOCKING, true)) != VAPI_OK) {
+    if((rv = vapi_connect_from_vpp(ctx,
+				   "api_from_sflow_plugin",
+				   SFLOW_VAPI_MAX_REQUEST_Q,
+				   SFLOW_VAPI_MAX_RESPONSE_Q,
+				   VAPI_MODE_BLOCKING,
+				   true)) != VAPI_OK) {
       clib_warning("vapi_connect_from_vpp() returned %d", rv);
     }
     else {
@@ -311,7 +314,19 @@ read_linux_if_index_numbers(sflow_main_t *smp) {
   // For example, might be better to test:
   // if(vapi_is_msg_available(ctx, vapi_msg_id_lcp_itf_pair_add_del_v2))
   // but that can only be done after we have connected.
-  if(vlib_get_plugin_symbol("linux_cp_plugin.so", "lcp_itf_pair_get")) {
+
+  #if 0
+  index_t **p_lip_db_by_phy = (index_t **)vlib_get_plugin_symbol("linux_cp_plugin.so", "lip_db_by_phy");
+  if(p_lip_db_by_phy) {
+    index_t *lip_db_by_phy = (*p_lip_db_by_phy);
+    clib_warning("lip_db_by_phy len=%d", vec_len(lip_db_by_phy));
+    clib_warning("lip_db_by_phy[1]=%d", lip_db_by_phy[3]);
+    index_t idx = lip_db_by_phy[3];
+    lcp_itf_pair_t *lip = lcp_itf_pair_get(idx);
+  }
+  #endif
+
+    if(vlib_get_plugin_symbol("linux_cp_plugin.so", "lcp_itf_pair_get")) {
     // previous query is done and results extracted?
     int req_active = clib_atomic_load_acq_n(&smp->vapi_request_active);
     if(req_active == false
