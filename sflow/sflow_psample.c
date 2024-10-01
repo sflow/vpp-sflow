@@ -46,7 +46,7 @@ extern "C" {
     int fdFlags = fcntl(fd, F_GETFL);
     fdFlags |= O_NONBLOCK;
     if(fcntl(fd, F_SETFL, fdFlags) < 0) {
-      clib_warning("fcntl(O_NONBLOCK) failed: %s\n", strerror(errno));
+      SFLOW_ERR("fcntl(O_NONBLOCK) failed: %s\n", strerror(errno));
     }
   }
 
@@ -55,7 +55,7 @@ extern "C" {
     int fdFlags = fcntl(fd, F_GETFD);
     fdFlags |= FD_CLOEXEC;
     if(fcntl(fd, F_SETFD, fdFlags) < 0) {
-      clib_warning("fcntl(F_SETFD=FD_CLOEXEC) failed: %s\n", strerror(errno));
+      SFLOW_ERR("fcntl(F_SETFD=FD_CLOEXEC) failed: %s\n", strerror(errno));
     }
   }
 
@@ -63,18 +63,18 @@ extern "C" {
     int txbuf=0;
     socklen_t txbufsiz = sizeof(txbuf);
     if(getsockopt(fd, SOL_SOCKET, SO_SNDBUF, &txbuf, &txbufsiz) < 0) {
-      clib_warning("getsockopt(SO_SNDBUF) failed: %s", strerror(errno));
+      SFLOW_ERR("getsockopt(SO_SNDBUF) failed: %s", strerror(errno));
     }
     // clib_warning("socket buffer current=%d", txbuf);
     if(txbuf < requested) {
       txbuf = requested;
       if(setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &txbuf, sizeof(txbuf)) < 0) {
-        clib_warning("setsockopt(SO_TXBUF=%d) failed: %s", requested, strerror(errno));
+        SFLOW_WARN("setsockopt(SO_TXBUF=%d) failed: %s", requested, strerror(errno));
       }
       // see what we actually got
       txbufsiz = sizeof(txbuf);
       if(getsockopt(fd, SOL_SOCKET, SO_SNDBUF, &txbuf, &txbufsiz) < 0) {
-        clib_warning("getsockopt(SO_SNDBUF) failed: %s", strerror(errno));
+        SFLOW_ERR("getsockopt(SO_SNDBUF) failed: %s", strerror(errno));
       }
       // clib_warning("socket buffer requested=%d received=%d", requested, txbuf);
     }
@@ -100,14 +100,14 @@ extern "C" {
   static int generic_open(u32 mod_id) {
     int nl_sock = socket(AF_NETLINK, SOCK_RAW, NETLINK_GENERIC);
     if(nl_sock < 0) {
-      clib_warning("nl_sock open failed: %s\n", strerror(errno));
+      SFLOW_ERR("nl_sock open failed: %s\n", strerror(errno));
       return -1;
     }
     // bind to a suitable id
     struct sockaddr_nl sa = { .nl_family = AF_NETLINK,
       .nl_pid = generic_pid(mod_id) };
     if(bind(nl_sock, (struct sockaddr *)&sa, sizeof(sa)) < 0)
-      clib_warning("generic_open: bind failed: %s\n", strerror(errno));
+      SFLOW_ERR("generic_open: bind failed: %s\n", strerror(errno));
     setNonBlocking(nl_sock);
     setCloseOnExec(nl_sock);
     return nl_sock;
@@ -176,16 +176,14 @@ extern "C" {
   {
     char *msg = (char *)NLMSG_DATA(nlh);
     int msglen = nlh->nlmsg_len - NLMSG_HDRLEN;
-#ifdef SFLOWPS_DEBUG
     struct genlmsghdr *genl = (struct genlmsghdr *)msg;
-#endif
-    // clib_warning("generic netlink CMD = %u\n", genl->cmd);
+    SFLOW_DBG("generic netlink CMD = %u\n", genl->cmd);
 
     for(int offset = GENL_HDRLEN; offset < msglen; ) {
       struct nlattr *attr = (struct nlattr *)(msg + offset);
       if(attr->nla_len == 0 ||
 	 (attr->nla_len + offset) > msglen) {
-	clib_warning("processNetlink_GENERIC attr parse error\n");
+	SFLOW_ERR("processNetlink_GENERIC attr parse error\n");
 	break; // attr parse error
       }
       char *attr_datap = (char *)attr + NLA_HDRLEN;
@@ -195,17 +193,17 @@ extern "C" {
 	break;
       case CTRL_ATTR_FAMILY_ID:
 	pst->family_id = *(u16 *)attr_datap;
-	// clib_warning("generic family id: %u\n", pst->family_id);
+	SFLOW_DBG("generic family id: %u\n", pst->family_id);
 	break;
       case CTRL_ATTR_FAMILY_NAME:
-	// clib_warning("generic family name: %s\n", attr_datap); 
+	SFLOW_DBG("generic family name: %s\n", attr_datap); 
 	break;
       case CTRL_ATTR_MCAST_GROUPS:
 	for(int grp_offset = NLA_HDRLEN; grp_offset < attr->nla_len;) {
 	  struct nlattr *grp_attr = (struct nlattr *)(msg + offset + grp_offset);
 	  if(grp_attr->nla_len == 0 ||
 	     (grp_attr->nla_len + grp_offset) > attr->nla_len) {
-	    clib_warning("processNetlink_GENERIC grp_attr parse error\n");
+	    SFLOW_ERR("processNetlink_GENERIC grp_attr parse error\n");
 	    break;
 	  }
 	  char *grp_name=NULL;
@@ -214,18 +212,18 @@ extern "C" {
 	    struct nlattr *gf_attr = (struct nlattr *)(msg + offset + grp_offset + gf_offset);
 	    if(gf_attr->nla_len == 0 ||
 	       (gf_attr->nla_len + gf_offset) > grp_attr->nla_len) {
-	      clib_warning("processNetlink_GENERIC gf_attr parse error\n");
+	      SFLOW_ERR("processNetlink_GENERIC gf_attr parse error\n");
 	      break;
 	    }
 	    char *grp_attr_datap = (char *)gf_attr + NLA_HDRLEN;
 	    switch(gf_attr->nla_type) {
 	    case CTRL_ATTR_MCAST_GRP_NAME:
 	      grp_name = grp_attr_datap;
-	      // clib_warning("psample multicast group: %s\n", grp_name); 
+	      SFLOW_DBG("psample multicast group: %s\n", grp_name); 
 	      break;
 	    case CTRL_ATTR_MCAST_GRP_ID:
 	      grp_id = *(u32 *)grp_attr_datap;
-	      // clib_warning("psample multicast group id: %u\n", grp_id); 
+	      SFLOW_DBG("psample multicast group id: %u\n", grp_id); 
 	      break;
 	    }
 	    gf_offset += NLMSG_ALIGN(gf_attr->nla_len);
@@ -234,7 +232,7 @@ extern "C" {
 	     && grp_name
 	     && grp_id
 	     && !strcmp(grp_name, PSAMPLE_NL_MCGRP_SAMPLE_NAME)) {
-	    // clib_warning("psample found group %s=%u\n", grp_name, grp_id);
+	    SFLOW_DBG("psample found group %s=%u\n", grp_name, grp_id);
 	    pst->group_id = grp_id;
 	    // We don't need to join the group if we are only sending to it.
 	  }
@@ -243,19 +241,17 @@ extern "C" {
 	}
 	break;
       default:
-#ifdef SFLOWPS_DEBUG
-	clib_warning("psample attr type: %u (nested=%u) len: %u\n",
-		     attr->nla_type,
-		     attr->nla_type & NLA_F_NESTED,
-		     attr->nla_len);
-#endif
+	SFLOW_DBG("psample attr type: %u (nested=%u) len: %u\n",
+		  attr->nla_type,
+		  attr->nla_type & NLA_F_NESTED,
+		  attr->nla_len);
 	break;
       }
       offset += NLMSG_ALIGN(attr->nla_len);
     }
     if(pst->family_id
        && pst->group_id) {
-      // clib_warning("psample state->READY\n");
+      SFLOW_DBG("psample state->READY\n");
       pst->state = SFLOWPS_STATE_READY;
     }
   }
@@ -287,7 +283,7 @@ extern "C" {
     uint8_t recv_buf[SFLOWPS_PSAMPLE_READNL_RCV_BUF];
     int numbytes = recv(fd, recv_buf, sizeof(recv_buf), 0);
     if(numbytes <= 0) {
-      clib_warning("readNetlink_PSAMPLE returned %d : %s\n", numbytes, strerror(errno));
+      SFLOW_ERR("readNetlink_PSAMPLE returned %d : %s\n", numbytes, strerror(errno));
       return;
     }
     struct nlmsghdr *nlh = (struct nlmsghdr*) recv_buf;
@@ -297,12 +293,12 @@ extern "C" {
       if(nlh->nlmsg_type == NLMSG_ERROR){
 	struct nlmsgerr *err_msg = (struct nlmsgerr *)NLMSG_DATA(nlh);
 	if(err_msg->error == 0) {
-	  clib_warning("received Netlink ACK\n");
+	  SFLOW_DBG("received Netlink ACK\n");
 	}
 	else {
-	  clib_warning("error in netlink message: %d : %s\n",
-		       err_msg->error,
-		       strerror(-err_msg->error));
+	  SFLOW_ERR("error in netlink message: %d : %s\n",
+		    err_msg->error,
+		    strerror(-err_msg->error));
 	}
 	return;
       }
@@ -342,7 +338,7 @@ extern "C" {
 	return true;
       }
       else {
-	clib_warning("SFLOWPS_close: returned %d : %s\n", err, strerror(errno));
+	SFLOW_ERR("SFLOWPS_close: returned %d : %s\n", err, strerror(errno));
       }
     }
     return false;
@@ -392,10 +388,10 @@ extern "C" {
     int expected_len = SFLOWPS_Fields[field].len;
     if(expected_len
        && expected_len != len) {
-      clib_warning("SFLOWPSSpec_setAttr(%s) length=%u != expected: %u\n",
-		   SFLOWPS_Fields[field].descr,
-		   len,
-		   expected_len);
+      SFLOW_ERR("SFLOWPSSpec_setAttr(%s) length=%u != expected: %u\n",
+		SFLOWPS_Fields[field].descr,
+		len,
+		expected_len);
       return false;
     }
     psa->attr.nla_type = field;
@@ -423,8 +419,6 @@ extern "C" {
   */
 
   int SFLOWPSSpec_send(SFLOWPS *pst, SFLOWPSSpec *spec) {
-    // clib_warning("send_psample getuid=%d geteuid=%d\n", getuid(), geteuid());
-
     spec->nlh.nlmsg_len = NLMSG_LENGTH(sizeof(spec->ge) + spec->attrs_len);
     spec->nlh.nlmsg_flags = 0;
     spec->nlh.nlmsg_type = pst->family_id;
@@ -459,14 +453,6 @@ extern "C" {
     }
     ASSERT(nn == spec->n_attrs);
 
-#if 0
-    clib_warning("iov fragments=%u (max=%u)\n", frag, MAX_IOV_FRAGMENTS);
-    for(int ii = 0; ii < frag; ii++) {
-      struct iovec *vec = &iov[ii];
-      clib_warning("  iov[%u] = (base=%p, len=%u)\n", ii, vec->iov_base, vec->iov_len);
-    }
-#endif
-
     struct sockaddr_nl da = {
       .nl_family = AF_NETLINK,
       .nl_groups = (1 << (pst->group_id-1))
@@ -481,7 +467,7 @@ extern "C" {
 
     int status = sendmsg(pst->nl_sock, &msg, 0);
     if (status <= 0) {
-      clib_warning("strerror(errno) = %s; errno = %d\n", strerror(errno), errno);
+      SFLOW_ERR("strerror(errno) = %s; errno = %d\n", strerror(errno), errno);
       return -1;
     }
     return 0;

@@ -44,7 +44,7 @@ extern "C" {
     int fdFlags = fcntl(fd, F_GETFL);
     fdFlags |= O_NONBLOCK;
     if(fcntl(fd, F_SETFL, fdFlags) < 0) {
-      clib_warning("fcntl(O_NONBLOCK) failed: %s\n", strerror(errno));
+      SFLOW_ERR("fcntl(O_NONBLOCK) failed: %s\n", strerror(errno));
     }
   }
 
@@ -53,7 +53,7 @@ extern "C" {
     int fdFlags = fcntl(fd, F_GETFD);
     fdFlags |= FD_CLOEXEC;
     if(fcntl(fd, F_SETFD, fdFlags) < 0) {
-      clib_warning("fcntl(F_SETFD=FD_CLOEXEC) failed: %s\n", strerror(errno));
+      SFLOW_ERR("fcntl(F_SETFD=FD_CLOEXEC) failed: %s\n", strerror(errno));
     }
   }
 
@@ -65,7 +65,7 @@ extern "C" {
   static int usersock_open(void) {
     int nl_sock = socket(AF_NETLINK, SOCK_RAW, NETLINK_USERSOCK);
     if(nl_sock < 0) {
-      clib_warning("nl_sock open failed: %s\n", strerror(errno));
+      SFLOW_ERR("nl_sock open failed: %s\n", strerror(errno));
       return -1;
     }
     // bind does not seem necessary (for sender)
@@ -104,7 +104,7 @@ extern "C" {
 	return true;
       }
       else {
-	clib_warning("SFLOWUS_close: returned %d : %s\n", err, strerror(errno));
+	SFLOW_WARN("SFLOWUS_close: returned %d : %s\n", err, strerror(errno));
       }
     }
     return false;
@@ -193,7 +193,7 @@ extern "C" {
       // a multicast is sent via NETLINK_USERSOCK, but
       // it's not an error so we can just ignore it here.
       if(errno != ECONNREFUSED) {
-	clib_warning("USERSOCK strerror(errno) = %s\n", strerror(errno));
+	SFLOW_DBG("USERSOCK strerror(errno) = %s\n", strerror(errno));
 	return -1;
       }
     }

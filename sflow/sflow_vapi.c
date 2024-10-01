@@ -67,7 +67,7 @@ sflow_vapi_connect(sflow_vapi_client_t *vac) {
   if(ctx == NULL) {
     // first time - open and connect.
     if((rv = vapi_ctx_alloc(&ctx)) != VAPI_OK) {
-      clib_warning("vap_ctx_alloc() returned %d", rv);
+      SFLOW_ERR("vap_ctx_alloc() returned %d", rv);
     }
     else {
       vac->vapi_ctx = ctx;
@@ -77,12 +77,12 @@ sflow_vapi_connect(sflow_vapi_client_t *vac) {
 				     SFLOW_VAPI_MAX_RESPONSE_Q,
 				     VAPI_MODE_BLOCKING,
 				     true)) != VAPI_OK) {
-	clib_warning("vapi_connect_from_vpp() returned %d", rv);
+	SFLOW_ERR("vapi_connect_from_vpp() returned %d", rv);
       }
       else {
 	// Connected - but is there a handler for the request we want to send?
 	if(!vapi_is_msg_available(ctx, vapi_msg_id_lcp_itf_pair_add_del_v2)) {
-	  clib_warning("vapi_is_msg_available() returned false");
+	  SFLOW_WARN("vapi_is_msg_available() returned false => linux-cp plugin not loaded");
 	  rv = VAPI_EUSER;
 	}
       }
@@ -117,7 +117,7 @@ get_lcp_itf_pairs(void *magic) {
 	  if((rv = vapi_lcp_itf_pair_get_v2(ctx, msg,
 					    my_pair_get_cb, sfif,
 					    my_pair_details_cb, sfif)) != VAPI_OK) {
-	    clib_warning("vapi_lcp_itf_pair_get_v2 returned %d", rv);
+	    SFLOW_ERR("vapi_lcp_itf_pair_get_v2 returned %d", rv);
 	    // vapi.h: "message must be freed by vapi_msg_free if not consumed by vapi_send"
 	    vapi_msg_free(ctx, msg);
 	  }

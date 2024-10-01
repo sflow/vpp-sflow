@@ -157,7 +157,7 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
       
 #ifdef SFLOW_LOG_CYCLES
       uint64_t cycles2 = clib_cpu_time_now();
-      clib_warning("sample cycles = %u", (cycles2 - cycles1));
+      // clib_warning("sample cycles = %u", (cycles2 - cycles1));
       vlib_node_increment_counter (vm, sflow_node.index, SFLOW_ERROR_CYCLES, (cycles2-cycles1));
 #endif
       

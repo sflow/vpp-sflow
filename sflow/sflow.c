@@ -33,6 +33,7 @@
 #include <vlibapi/api_helper_macros.h>
 
 sflow_main_t sflow_main;
+vlib_log_class_t sflow_logger;
 
 static void
 sflow_stat_segment_client_init (void)
@@ -287,7 +288,7 @@ read_worker_fifos(sflow_main_t *smp) {
 	if(sample.header_bytes > smp->headerB) {
 	  // Get here if header-bytes setting is reduced dynamically and a sample
 	  // that was in the FIFO appears with a larger header.
-	  clib_warning("sample.header_bytes too big: %u\n", sample.header_bytes);
+	  // clib_warning("sample.header_bytes too big: %u\n", sample.header_bytes);
 	  continue;
 	}
 	SFLOWPSSpec spec = {};
@@ -354,7 +355,7 @@ sflow_process_samples(vlib_main_t *vm, vlib_node_runtime_t *node,
     // before it is ready to send
     EnumSFLOWPSState psState = SFLOWPS_state(&smp->sflow_psample);
     if(psState != SFLOWPS_STATE_READY) {
-      clib_warning("PSAMPLE state = %u\n", psState);
+      // clib_warning("PSAMPLE state = %u\n", psState);
       SFLOWPS_open_step(&smp->sflow_psample);
     }
 
@@ -406,16 +407,16 @@ static void sflow_set_worker_sampling_state(sflow_main_t *smp) {
       sfwk->smpN = smp->samplingN;
       sfwk->seed = thread_index;
       sfwk->skip = sflow_next_random_skip(sfwk);
-      clib_warning("sflowset_worker_sampling_state: samplingN=%u thread=%u skip=%u",
-		   smp->samplingN,
-		   thread_index,
-		   sfwk->skip);
+      SFLOW_DBG("sflowset_worker_sampling_state: samplingN=%u thread=%u skip=%u",
+		smp->samplingN,
+		thread_index,
+		sfwk->skip);
     }
   }
 }
 
 static void sflow_sampling_start(sflow_main_t *smp) {
-  clib_warning("sflow_sampling_start");
+  SFLOW_INFO("sflow_sampling_start");
   
   smp->running = 1;
   // Reset this clock so that the per-second netlink status updates
@@ -440,15 +441,15 @@ static void sflow_sampling_start(sflow_main_t *smp) {
   /* set up (or reset) sampling context for each thread */
   sflow_set_worker_sampling_state(smp);
 
-  clib_warning("sflow_sampling_start done");
+  // clib_warning("sflow_sampling_start done");
 }
       
 static void sflow_sampling_stop(sflow_main_t *smp) {
-  clib_warning("sflow_sampling_stop");
+  SFLOW_INFO("sflow_sampling_stop");
   smp->running = 0;
   SFLOWPS_close(&smp->sflow_psample);
   SFLOWUS_close(&smp->sflow_usersock);
-  clib_warning("sflow_sampling_stop_done");
+  // clib_warning("sflow_sampling_stop_done");
 }
 
 static void sflow_sampling_start_stop(sflow_main_t *smp) {
@@ -502,7 +503,7 @@ int sflow_header_bytes (sflow_main_t * smp, u32 headerB)
   if(hdrB > SFLOW_MAX_HEADER_BYTES)
     hdrB = SFLOW_MAX_HEADER_BYTES;
   if(hdrB != headerB)
-    clib_warning("header_bytes rounded from %u to %u\n", headerB, hdrB);
+    SFLOW_WARN("header_bytes rounded from %u to %u\n", headerB, hdrB);
   smp->headerB = hdrB;
   return 0;
 }
@@ -523,11 +524,12 @@ int sflow_enable_disable (sflow_main_t * smp, u32 sw_if_index, int enable_disabl
 
   // note: vnet_interface_main_t has "fast lookup table" called
   // he_if_index_by_sw_if_index.
+  SFLOW_DBG("sw_if_index=%u, sup_sw_if_index=%u, hw_if_index=%u\n",
+	    sw->sw_if_index,
+	    sw->sup_sw_if_index,
+	    sw->hw_if_index);
 #if 0
-  clib_warning("sw_if_index=%u, sup_sw_if_index=%u, hw_if_index=%u\n",
-	       sw->sw_if_index,
-	       sw->sup_sw_if_index,
-	       sw->hw_if_index);
+  // TODO: do we report MTU with counters sample?
   for(int ii = 0; ii < VNET_N_MTU; ii++)
     clib_warning("mtu[%u]=%u\n", ii, sw->mtu[ii]);
 #endif
@@ -832,6 +834,8 @@ static void vl_api_sflow_header_bytes_t_handler
 
 static clib_error_t * sflow_init (vlib_main_t * vm)
 {
+  sflow_logger = vlib_log_register_class ("sflow", "all");
+  
   sflow_main_t * smp = &sflow_main;
   clib_error_t * error = 0;
 
