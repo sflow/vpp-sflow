@@ -65,7 +65,7 @@ extern "C" {
     if(getsockopt(fd, SOL_SOCKET, SO_SNDBUF, &txbuf, &txbufsiz) < 0) {
       clib_warning("getsockopt(SO_SNDBUF) failed: %s", strerror(errno));
     }
-    clib_warning("socket buffer current=%d", txbuf);
+    // clib_warning("socket buffer current=%d", txbuf);
     if(txbuf < requested) {
       txbuf = requested;
       if(setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &txbuf, sizeof(txbuf)) < 0) {
@@ -76,7 +76,7 @@ extern "C" {
       if(getsockopt(fd, SOL_SOCKET, SO_SNDBUF, &txbuf, &txbufsiz) < 0) {
         clib_warning("getsockopt(SO_SNDBUF) failed: %s", strerror(errno));
       }
-      clib_warning("socket buffer requested=%d received=%d", requested, txbuf);
+      // clib_warning("socket buffer requested=%d received=%d", requested, txbuf);
     }
     return txbuf;
   }
@@ -155,7 +155,7 @@ extern "C" {
 
   static void getFamily_PSAMPLE(SFLOWPS *pst)
   {
-    clib_warning("getFamily\n");
+    // clib_warning("getFamily\n");
     generic_send(pst->nl_sock,
 		 pst->id,
 		 GENL_ID_CTRL,
@@ -176,8 +176,10 @@ extern "C" {
   {
     char *msg = (char *)NLMSG_DATA(nlh);
     int msglen = nlh->nlmsg_len - NLMSG_HDRLEN;
+#ifdef SFLOWPS_DEBUG
     struct genlmsghdr *genl = (struct genlmsghdr *)msg;
-    clib_warning("generic netlink CMD = %u\n", genl->cmd);
+#endif
+    // clib_warning("generic netlink CMD = %u\n", genl->cmd);
 
     for(int offset = GENL_HDRLEN; offset < msglen; ) {
       struct nlattr *attr = (struct nlattr *)(msg + offset);
@@ -193,10 +195,10 @@ extern "C" {
 	break;
       case CTRL_ATTR_FAMILY_ID:
 	pst->family_id = *(u16 *)attr_datap;
-	clib_warning("generic family id: %u\n", pst->family_id);
+	// clib_warning("generic family id: %u\n", pst->family_id);
 	break;
       case CTRL_ATTR_FAMILY_NAME:
-	clib_warning("generic family name: %s\n", attr_datap); 
+	// clib_warning("generic family name: %s\n", attr_datap); 
 	break;
       case CTRL_ATTR_MCAST_GROUPS:
 	for(int grp_offset = NLA_HDRLEN; grp_offset < attr->nla_len;) {
@@ -219,11 +221,11 @@ extern "C" {
 	    switch(gf_attr->nla_type) {
 	    case CTRL_ATTR_MCAST_GRP_NAME:
 	      grp_name = grp_attr_datap;
-	      clib_warning("psample multicast group: %s\n", grp_name); 
+	      // clib_warning("psample multicast group: %s\n", grp_name); 
 	      break;
 	    case CTRL_ATTR_MCAST_GRP_ID:
 	      grp_id = *(u32 *)grp_attr_datap;
-	      clib_warning("psample multicast group id: %u\n", grp_id); 
+	      // clib_warning("psample multicast group id: %u\n", grp_id); 
 	      break;
 	    }
 	    gf_offset += NLMSG_ALIGN(gf_attr->nla_len);
@@ -232,7 +234,7 @@ extern "C" {
 	     && grp_name
 	     && grp_id
 	     && !strcmp(grp_name, PSAMPLE_NL_MCGRP_SAMPLE_NAME)) {
-	    clib_warning("psample found group %s=%u\n", grp_name, grp_id);
+	    // clib_warning("psample found group %s=%u\n", grp_name, grp_id);
 	    pst->group_id = grp_id;
 	    // We don't need to join the group if we are only sending to it.
 	  }
@@ -241,16 +243,19 @@ extern "C" {
 	}
 	break;
       default:
+#ifdef SFLOWPS_DEBUG
 	clib_warning("psample attr type: %u (nested=%u) len: %u\n",
 		     attr->nla_type,
 		     attr->nla_type & NLA_F_NESTED,
 		     attr->nla_len);
+#endif
+	break;
       }
       offset += NLMSG_ALIGN(attr->nla_len);
     }
     if(pst->family_id
        && pst->group_id) {
-      clib_warning("psample state->READY\n");
+      // clib_warning("psample state->READY\n");
       pst->state = SFLOWPS_STATE_READY;
     }
   }
@@ -476,8 +481,7 @@ extern "C" {
 
     int status = sendmsg(pst->nl_sock, &msg, 0);
     if (status <= 0) {
-      // if (errno != EMSGSIZE)
-        clib_warning("strerror(errno) = %s; errno = %d\n", strerror(errno), errno);
+      clib_warning("strerror(errno) = %s; errno = %d\n", strerror(errno), errno);
       return -1;
     }
     return 0;

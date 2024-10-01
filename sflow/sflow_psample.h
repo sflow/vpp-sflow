@@ -31,6 +31,8 @@
 #include <signal.h>
 #include <ctype.h>
 
+// #define SFLOWPS_DEBUG
+
 #define SFLOWPS_PSAMPLE_READNL_RCV_BUF 8192
 #define SFLOWPS_PSAMPLE_READNL_SND_BUF 1000000
 

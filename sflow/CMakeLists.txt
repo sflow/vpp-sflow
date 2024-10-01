@@ -17,12 +17,15 @@ add_vpp_plugin(sflow
   SOURCES
   sflow.c
   node.c
+  sflow_common.h
   sflow.h
   sflow_psample.c
   sflow_psample.h
   sflow_psample_fields.h
   sflow_usersock.c
   sflow_usersock.h
+  sflow_vapi.c
+  sflow_vapi.h
 
   MULTIARCH_SOURCES
   node.c

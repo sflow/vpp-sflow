@@ -146,7 +146,7 @@ extern "C" {
     -----------------___________________________------------------
   */
 
-  void SFLOWUSSpec_send(SFLOWUS *ust, SFLOWUSSpec *spec) {
+  int SFLOWUSSpec_send(SFLOWUS *ust, SFLOWUSSpec *spec) {
     spec->nlh.nlmsg_len = NLMSG_LENGTH(spec->attrs_len);
     spec->nlh.nlmsg_flags = 0;
     spec->nlh.nlmsg_seq = ++ust->nl_seq;
@@ -192,7 +192,10 @@ extern "C" {
       // Linux replies with ECONNREFUSED when
       // a multicast is sent via NETLINK_USERSOCK, but
       // it's not an error so we can just ignore it here.
-      if(errno != ECONNREFUSED)
+      if(errno != ECONNREFUSED) {
 	clib_warning("USERSOCK strerror(errno) = %s\n", strerror(errno));
+	return -1;
+      }
     }
+    return 0;
   }

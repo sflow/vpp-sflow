@@ -29,109 +29,10 @@
 #include <vpp-api/client/stat_client.h>
 #include <vlib/stats/stats.h>
 
-#include <vapi/vapi.h>
-#include <vapi/memclnt.api.vapi.h>
-#include <vapi/vlib.api.vapi.h>
-
-#ifdef included_interface_types_api_types_h
-#define defined_vapi_enum_if_status_flags
-#define defined_vapi_enum_mtu_proto
-#define defined_vapi_enum_link_duplex
-#define defined_vapi_enum_sub_if_flags
-#define defined_vapi_enum_rx_mode
-#define defined_vapi_enum_if_type
-#define defined_vapi_enum_direction
-#endif
-#include <vapi/lcp.api.vapi.h>
-
-DEFINE_VAPI_MSG_IDS_LCP_API_JSON;
-
 #define REPLY_MSG_ID_BASE smp->msg_id_base
 #include <vlibapi/api_helper_macros.h>
 
 sflow_main_t sflow_main;
-
-#ifdef SFLOW_USE_VAPI
-
-#ifndef SFLOW_TEST_NOOP_VAPI
-
-static vapi_error_e
-my_pair_get_cb(struct vapi_ctx_s *ctx,
-	       void *callback_ctx,
-	       vapi_error_e rv,
-	       bool is_last,
-	       vapi_payload_lcp_itf_pair_get_v2_reply *reply) {
-  // this is a no-op, but it seems like it's presence is still required.  For example,
-  // it is called if the pair lookup does not find anything.
-  return VAPI_OK;
-}
-
-static vapi_error_e
-my_pair_details_cb(struct vapi_ctx_s *ctx,
-		   void *callback_ctx,
-		   vapi_error_e rv,
-		   bool is_last,
-		   vapi_payload_lcp_itf_pair_details *details) {
-  sflow_main_per_interface_data_t *sfif = (sflow_main_per_interface_data_t *)callback_ctx;
-  // Setting this here will mean it is sent to hsflowd with the interface counters.
-  sfif->linux_if_index = details->vif_index;
-  return VAPI_OK;
-}  
-#endif // SFLOW_TEST_NOOP_VAPI
-
-// in forked thread
-static void *get_lcp_itf_pairs(void *magic) {
-  sflow_main_t *smp = magic;
-  vapi_error_e rv = VAPI_OK;
-
-#ifndef SFLOW_TEST_NOOP_VAPI
-  sflow_main_per_interface_data_t *intfs = smp->vapi_itfs;
-  vlib_set_thread_name(SFLOW_VAPI_THREAD_NAME);
-  vapi_ctx_t ctx = NULL;
-
-  if((rv = vapi_ctx_alloc(&ctx)) != VAPI_OK) {
-    clib_warning("vap_ctx_alloc() returned %d", rv);
-  }
-  else {
-    if((rv = vapi_connect_from_vpp(ctx,
-				   "api_from_sflow_plugin",
-				   SFLOW_VAPI_MAX_REQUEST_Q,
-				   SFLOW_VAPI_MAX_RESPONSE_Q,
-				   VAPI_MODE_BLOCKING,
-				   true)) != VAPI_OK) {
-      clib_warning("vapi_connect_from_vpp() returned %d", rv);
-    }
-    else {
-      for(int ii = 0; ii < vec_len(intfs); ii++) {
-	sflow_main_per_interface_data_t *sfif = vec_elt_at_index(intfs, ii);
-	if(sfif
-	   && sfif->sflow_enabled) {
-	  vapi_msg_lcp_itf_pair_get_v2 *msg = vapi_alloc_lcp_itf_pair_get_v2(ctx);
-	  if(msg) {
-	    msg->payload.sw_if_index = sfif->sw_if_index;
-	    if((rv = vapi_lcp_itf_pair_get_v2(ctx, msg,
-					      my_pair_get_cb, sfif,
-					      my_pair_details_cb, sfif)) != VAPI_OK) {
-	      clib_warning("vapi_lcp_itf_pair_get_v2 returned %d", rv);
-	      // vapi.h: "message must be freed by vapi_msg_free if not consumed by vapi_send"
-	      vapi_msg_free(ctx, msg);
-	    }
-	  }
-	}
-      }
-      vapi_disconnect_from_vpp (ctx);
-    }
-    vapi_ctx_free (ctx);
-  }
-#endif // SFLOW_TEST_NOOP_VAPI
-
-  // indicate that we are done - more portable that using pthread_tryjoin_np()
-  smp->vapi_request_status = (int)rv;
-  clib_atomic_store_rel_n(&smp->vapi_request_active, false);
-  return(void *)rv;
-}
-
-#endif // SFLOW_USE_VAPI
 
 static void
 sflow_stat_segment_client_init (void)
@@ -216,7 +117,7 @@ static int startsWith(u8 *str, char *prefix) {
   return false;
 }
 
-static void update_counters(sflow_main_t *smp, sflow_main_per_interface_data_t *sfif) {
+static void update_counters(sflow_main_t *smp, sflow_per_interface_data_t *sfif) {
   vnet_sw_interface_t *sw = vnet_get_sw_interface(smp->vnet_main, sfif->sw_if_index);
   vnet_hw_interface_t *hw = vnet_get_hw_interface(smp->vnet_main, sfif->hw_if_index);
   // This gives us a list of stat integers
@@ -301,97 +202,33 @@ static void update_counters(sflow_main_t *smp, sflow_main_per_interface_data_t *
   SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_RX_DISCARDS, ifCtrs.rx.drps);
   SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_TX_DISCARDS, ifCtrs.tx.drps);
   SFLOWUSSpec_setAttr(&spec, SFLOW_VPP_ATTR_HW_ADDRESS, hw->hw_address, vec_len(hw->hw_address));
-  SFLOWUSSpec_send(&smp->sflow_usersock, &spec);
+  smp->unixsock_seq++;
+  SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_SEQ, smp->unixsock_seq);
+  if(SFLOWUSSpec_send(&smp->sflow_usersock, &spec) < 0)
+    smp->csample_send_drops++;
+  smp->csample_send++;
 }
 
-#ifdef SFLOW_USE_VAPI
-
-static int
-read_linux_if_index_numbers(sflow_main_t *smp) {
-  // Don't even try if the linux-cp plugin is not loaded
-  // TODO: find a better way to ask if the plugin is loaded and the
-  // VAPI request will work.
-  // For example, might be better to test:
-  // if(vapi_is_msg_available(ctx, vapi_msg_id_lcp_itf_pair_add_del_v2))
-  // but that can only be done after we have connected.
-
-  #if 0
-  index_t **p_lip_db_by_phy = (index_t **)vlib_get_plugin_symbol("linux_cp_plugin.so", "lip_db_by_phy");
-  if(p_lip_db_by_phy) {
-    index_t *lip_db_by_phy = (*p_lip_db_by_phy);
-    clib_warning("lip_db_by_phy len=%d", vec_len(lip_db_by_phy));
-    clib_warning("lip_db_by_phy[1]=%d", lip_db_by_phy[3]);
-    index_t idx = lip_db_by_phy[3];
-    lcp_itf_pair_t *lip = lcp_itf_pair_get(idx);
+static u32
+total_drops(sflow_main_t *smp) {
+  // sum sendmsg and worker-fifo drops
+  u32 all_drops = smp->psample_send_drops;
+  for(u32 thread_index = 0; thread_index < smp->total_threads; thread_index++) {
+    sflow_per_thread_data_t *sfwk = vec_elt_at_index(smp->per_thread_data, thread_index);
+    all_drops += sfwk->drop;
   }
-  #endif
-
-    if(vlib_get_plugin_symbol("linux_cp_plugin.so", "lcp_itf_pair_get")) {
-    // previous query is done and results extracted?
-    int req_active = clib_atomic_load_acq_n(&smp->vapi_request_active);
-    if(req_active == false
-       && smp->vapi_itfs == NULL) {
-      // make a copy of the current interfaces vector for the lookup thread to write into
-      smp->vapi_itfs = vec_dup(smp->main_per_interface_data);
-      pthread_attr_t attr;
-      pthread_attr_init(&attr);
-      pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-      pthread_attr_setstacksize(&attr, VLIB_THREAD_STACK_SIZE);
-      smp->vapi_request_active = true;
-      pthread_create(&smp->vapi_thread, &attr, get_lcp_itf_pairs, smp);
-      pthread_attr_destroy(&attr);
-      return true;
-    }
-    else {
-      // We get here if the lookup is slow or is deadlocked. Which can happen if
-      // there is no handler for the request we sent. Much better to be stuck
-      // here than to risk stalling the main thread.
-#ifndef SFLOW_TEST_HAMMER_VAPI
-      clib_warning("vapi_thread request still waiting");
-#endif
-    }
-  }
-  return false;
+  return all_drops;
 }
-
-static int
-check_for_linux_if_index_results(sflow_main_t *smp) {
-  // request completed?
-  int req_active = clib_atomic_load_acq_n(&smp->vapi_request_active);
-  if(req_active == false
-     && smp->vapi_itfs != NULL) {
-    // yes, extract what we learned
-    // TODO: would not have to do this if vector were array of pointers
-    // to sflow_main_per_interface_data_t rather than an actual array, but
-    // it does mean we have very clear separation between the threads.
-    for(int ii = 0; ii < vec_len(smp->vapi_itfs); ii++) {
-      sflow_main_per_interface_data_t *sfif1 = vec_elt_at_index(smp->vapi_itfs, ii);
-      sflow_main_per_interface_data_t *sfif2 = vec_elt_at_index(smp->main_per_interface_data, ii);
-      if(sfif1
-	 && sfif2
-	 && sfif1->sflow_enabled
-	 && sfif2->sflow_enabled)
-	sfif2->linux_if_index = sfif1->linux_if_index;
-    }
-    vec_free(smp->vapi_itfs);
-    return true;
-  }
-  return false;
-}
-#endif // SFLOW_USE_VAPI
 
 static void
 send_sampling_status_info(sflow_main_t *smp) {
   SFLOWUSSpec spec = {};
+  u32 all_pipeline_drops = total_drops(smp);
   SFLOWUSSpec_setMsgType(&spec, SFLOW_VPP_MSG_STATUS);
   SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_UPTIME_S, smp->now_mono_S);
-  // sum sendmsg and worker-fifo drops
-  u32 all_pipeline_drops = smp->psample_send_drops;
-  for(u32 thread_index = 0; thread_index < smp->total_threads; thread_index++) {
-    sflow_per_thread_data_t *sfwk = vec_elt_at_index(smp->per_thread_data, thread_index);
-    all_pipeline_drops += sfwk->drop;
-  }
   SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_DROPS, all_pipeline_drops);
+  ++smp->unixsock_seq;
+  SFLOWUSSpec_setAttrInt(&spec, SFLOW_VPP_ATTR_SEQ, smp->unixsock_seq);
   SFLOWUSSpec_send(&smp->sflow_usersock, &spec);
 }
 
@@ -399,8 +236,8 @@ static int
 counter_polling_check(sflow_main_t *smp) {
   // see if we should poll one or more interfaces
   int polled = 0;
-  for(int ii = 0; ii < vec_len(smp->main_per_interface_data); ii++) {
-    sflow_main_per_interface_data_t *sfif = vec_elt_at_index(smp->main_per_interface_data, ii);
+  for(int ii = 0; ii < vec_len(smp->per_interface_data); ii++) {
+    sflow_per_interface_data_t *sfif = vec_elt_at_index(smp->per_interface_data, ii);
     if(sfif
        && sfif->sflow_enabled
        && (sfif->polled == 0 // always send the first time
@@ -508,8 +345,8 @@ sflow_process_samples(vlib_main_t *vm, vlib_node_runtime_t *node,
 
 #ifdef SFLOW_USE_VAPI
 #ifdef SFLOW_TEST_HAMMER_VAPI
-    check_for_linux_if_index_results(smp);
-    read_linux_if_index_numbers(smp);
+    sflow_vapi_check_for_linux_if_index_results(&smp->vac, smp->per_interface_data);
+    sflow_vapi_read_linux_if_index_numbers(&smp->vac, smp->per_interface_data);
 #endif
 #endif
 
@@ -529,12 +366,15 @@ sflow_process_samples(vlib_main_t *vm, vlib_node_runtime_t *node,
       // second rollover
       smp->now_mono_S = tnow_S;
 #ifdef SFLOW_USE_VAPI
-      // look up linux if_index numbers
-      check_for_linux_if_index_results(smp);
-      if(smp->vapi_requests == 0
-	 || (tnow_S % SFLOW_VAPI_POLL_INTERVAL) == 0) {
-	read_linux_if_index_numbers(smp);
-	smp->vapi_requests++;
+      if(!smp->vac.vapi_unavailable) {
+	// look up linux if_index numbers
+	sflow_vapi_check_for_linux_if_index_results(&smp->vac, smp->per_interface_data);
+	if(smp->vapi_requests == 0
+	   || (tnow_S % SFLOW_VAPI_POLL_INTERVAL) == 0) {
+	  if(sflow_vapi_read_linux_if_index_numbers(&smp->vac, smp->per_interface_data)) {
+	    smp->vapi_requests++;
+	  }
+	}
       }
 #endif
       // send status info
@@ -683,18 +523,20 @@ int sflow_enable_disable (sflow_main_t * smp, u32 sw_if_index, int enable_disabl
 
   // note: vnet_interface_main_t has "fast lookup table" called
   // he_if_index_by_sw_if_index.
+#if 0
   clib_warning("sw_if_index=%u, sup_sw_if_index=%u, hw_if_index=%u\n",
 	       sw->sw_if_index,
 	       sw->sup_sw_if_index,
 	       sw->hw_if_index);
   for(int ii = 0; ii < VNET_N_MTU; ii++)
     clib_warning("mtu[%u]=%u\n", ii, sw->mtu[ii]);
+#endif
 
   // note: vnet_hw_interface_t has uword *bond_info
   // (where 0=>none, ~0 => slave, other=>ptr to bitmap of slaves)
 
-  vec_validate (smp->main_per_interface_data, sw->hw_if_index);
-  sflow_main_per_interface_data_t *sfif = vec_elt_at_index(smp->main_per_interface_data, sw->hw_if_index);
+  vec_validate (smp->per_interface_data, sw->hw_if_index);
+  sflow_per_interface_data_t *sfif = vec_elt_at_index(smp->per_interface_data, sw->hw_if_index);
   if(enable_disable == sfif->sflow_enabled) {
     // redundant enable or disable
     // TODO: decide which error for (a) redundant enable and (b) redundant disable
@@ -865,6 +707,35 @@ sflow_enable_disable_command_fn (vlib_main_t * vm,
   return 0;
 }
 
+static clib_error_t *
+show_sflow_command_fn (vlib_main_t *vm, unformat_input_t *input,
+		vlib_cli_command_t *cmd)
+{
+  sflow_main_t * smp = &sflow_main;
+  clib_error_t *error = NULL;
+  vlib_cli_output (vm, "sflow sampling-rate %u\n", smp->samplingN);
+  vlib_cli_output (vm, "sflow sampling-direction ingress\n");
+  vlib_cli_output (vm, "sflow polling-interval %u\n", smp->pollingS);
+  vlib_cli_output (vm, "sflow header-bytes %u\n", smp->headerB);
+  u32 itfs_enabled = 0;
+  for(int ii = 0; ii < vec_len(smp->per_interface_data); ii++) {
+    sflow_per_interface_data_t *sfif = vec_elt_at_index(smp->per_interface_data, ii);
+    if(sfif
+       && sfif->sflow_enabled) {
+      itfs_enabled++;
+      vnet_hw_interface_t *hw = vnet_get_hw_interface(smp->vnet_main, sfif->hw_if_index);
+      vlib_cli_output (vm, "sflow enable %s\n", (char *)hw->name);
+    }
+  }
+  vlib_cli_output (vm, "Status\n");
+  vlib_cli_output (vm, "  interfaces enabled: %u\n", itfs_enabled);
+  vlib_cli_output (vm, "  packet samples sent: %u\n", smp->psample_seq_ingress + smp->psample_seq_egress);
+  vlib_cli_output (vm, "  packet samples dropped: %u\n", total_drops(smp));
+  vlib_cli_output (vm, "  counter samples sent: %u\n", smp->csample_send);
+  vlib_cli_output (vm, "  counter samples dropped: %u\n", smp->csample_send_drops);
+  return error;
+}
+
 /* *INDENT-OFF* */
 VLIB_CLI_COMMAND (sflow_enable_disable_command, static) =
   {
@@ -892,6 +763,13 @@ VLIB_CLI_COMMAND (sflow_header_bytes_command, static) =
     .path = "sflow header-bytes",
     .short_help = "sflow header-bytes <B>",
     .function = sflow_header_bytes_command_fn,
+  };
+
+VLIB_CLI_COMMAND (show_sflow_command, static) =
+  {
+    .path = "show sflow",
+    .short_help = "show sflow",
+    .function = show_sflow_command_fn,
   };
 /* *INDENT-ON* */
 

@@ -21,6 +21,8 @@
 
 #include <vppinfra/hash.h>
 #include <vppinfra/error.h>
+#include <sflow/sflow_common.h>
+#include <sflow/sflow_vapi.h>
 #include <sflow/sflow_psample.h>
 #include <sflow/sflow_usersock.h>
 
@@ -30,7 +32,9 @@
 #define SFLOW_MAX_HEADER_BYTES 256
 #define SFLOW_MIN_HEADER_BYTES 64
 #define SFLOW_HEADER_BYTES_STEP 32
-#define SFLOW_VAPI_POLL_INTERVAL 5
+
+#define SFLOW_USE_VAPI
+// #define SFLOW_TEST_HAMMER_VAPI
 
 //#define SFLOW_TEST_SHORT_FIFO 1
 #ifdef SFLOW_TEST_SHORT_FIFO
@@ -47,14 +51,6 @@
 #define SFLOW_POLL_WAIT_S 0.001
 #define SFLOW_READ_BATCH 100
 #endif
-
-// Disable this until we find the memory leak
-// #define SFLOW_USE_VAPI
-// #define SFLOW_VAPI_MAX_REQUEST_Q 8
-// #define SFLOW_VAPI_MAX_RESPONSE_Q 16
-// #define SFLOW_VAPI_THREAD_NAME "sflow_vapi" // must be <= 15 characters
-// #define SFLOW_TEST_HAMMER_VAPI
-// #define SFLOW_TEST_NOOP_VAPI
 
 // use PSAMPLE group number to distinguish VPP samples from others
 // (so that hsflowd will know to remap the ifIndex numbers if necessary)
@@ -132,15 +128,6 @@ typedef struct {
   sflow_fifo_t fifo;
 } sflow_per_thread_data_t;
 
-/* private to main thread */
-typedef struct {
-  u32 sw_if_index;
-  u32 hw_if_index;
-  u32 linux_if_index;
-  u32 polled;
-  int sflow_enabled;
-} sflow_main_per_interface_data_t;
-
 typedef struct {
   /* API message ID base */
   u16 msg_id_base;
@@ -155,7 +142,7 @@ typedef struct {
   u32 pollingS;
   u32 headerB;
   u32 total_threads;
-  sflow_main_per_interface_data_t *main_per_interface_data;
+  sflow_per_interface_data_t *per_interface_data;
   sflow_per_thread_data_t *per_thread_data;
 
   /* psample channel (packet samples) */
@@ -177,14 +164,15 @@ typedef struct {
   u32 psample_seq_ingress;
   u32 psample_seq_egress;
   u32 psample_send_drops;
+  u32 csample_send;
+  u32 csample_send_drops;
+  u32 unixsock_seq;
 
   /* vapi query helper thread (transient) */
   CLIB_CACHE_LINE_ALIGN_MARK(_vapi);
-  volatile int vapi_request_active; // to sync main <-> vapi_thread
-  pthread_t vapi_thread;
-  sflow_main_per_interface_data_t *vapi_itfs;
-  int vapi_request_status; // written by vapi_thread
+  sflow_vapi_client_t vac;
   int vapi_requests;
+
 } sflow_main_t;
 
 extern sflow_main_t sflow_main;

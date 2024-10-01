@@ -63,6 +63,7 @@ typedef enum {
   SFLOW_VPP_ATTR_UPTIME_S,      /* u32 */
   SFLOW_VPP_ATTR_OSINDEX,       /* u32 Linux ifIndex number, where applicable */
   SFLOW_VPP_ATTR_DROPS,         /* u32 all FIFO and netlink sendmsg drops */
+  SFLOW_VPP_ATTR_SEQ,           /* u32 send seq no */
   /* enum shared with hsflowd, so only add here */
   __SFLOW_VPP_ATTR_MAX
 } EnumSFlowVppAttributes;
@@ -117,6 +118,6 @@ bool SFLOWUSSpec_setMsgType(SFLOWUSSpec *spec, EnumSFlowVppMsgType type);
 bool SFLOWUSSpec_setAttr(SFLOWUSSpec *spec, EnumSFlowVppAttributes field, void *buf, int len);
 #define SFLOWUSSpec_setAttrInt(spec, field, val) SFLOWUSSpec_setAttr((spec), (field), &(val), sizeof(val))
 
-void SFLOWUSSpec_send(SFLOWUS *ust, SFLOWUSSpec *spec);
+int SFLOWUSSpec_send(SFLOWUS *ust, SFLOWUSSpec *spec);
 
 #endif  /* __included_sflow_usersock_h__ */
