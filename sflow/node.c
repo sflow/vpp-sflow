@@ -180,49 +180,67 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
     vlib_get_next_frame (vm, node, next_index,
 			 to_next, n_left_to_next);
     
-    while (n_left_from >= 4 && n_left_to_next >= 2)  {
+    while (n_left_from >= 8 && n_left_to_next >= 4)  {
       u32 next0 = SFLOW_NEXT_ETHERNET_INPUT;
       u32 next1 = SFLOW_NEXT_ETHERNET_INPUT;
-      ethernet_header_t *en0, *en1;
-      u32 bi0, bi1;
-      vlib_buffer_t * b0, * b1;
+      u32 next2 = SFLOW_NEXT_ETHERNET_INPUT;
+      u32 next3 = SFLOW_NEXT_ETHERNET_INPUT;
+      ethernet_header_t *en0, *en1, *en2, *en3;
+      u32 bi0, bi1, bi2, bi3;
+      vlib_buffer_t *b0, *b1, *b2, *b3;
           
       /* Prefetch next iteration. */
       {
-	vlib_buffer_t * p2, * p3;
+	vlib_buffer_t *p4, *p5, *p6, *p7;
             
-	p2 = vlib_get_buffer (vm, from[2]);
-	p3 = vlib_get_buffer (vm, from[3]);
+	p4 = vlib_get_buffer (vm, from[4]);
+	p5 = vlib_get_buffer (vm, from[5]);
+	p6 = vlib_get_buffer (vm, from[6]);
+	p7 = vlib_get_buffer (vm, from[7]);
             
-	vlib_prefetch_buffer_header (p2, LOAD);
-	vlib_prefetch_buffer_header (p3, LOAD);
+	vlib_prefetch_buffer_header (p4, LOAD);
+	vlib_prefetch_buffer_header (p5, LOAD);
+	vlib_prefetch_buffer_header (p6, LOAD);
+	vlib_prefetch_buffer_header (p7, LOAD);
 
-	CLIB_PREFETCH (p2->data, CLIB_CACHE_LINE_BYTES, STORE);
-	CLIB_PREFETCH (p3->data, CLIB_CACHE_LINE_BYTES, STORE);
+	CLIB_PREFETCH (p4->data, CLIB_CACHE_LINE_BYTES, STORE);
+	CLIB_PREFETCH (p5->data, CLIB_CACHE_LINE_BYTES, STORE);
+	CLIB_PREFETCH (p6->data, CLIB_CACHE_LINE_BYTES, STORE);
+	CLIB_PREFETCH (p7->data, CLIB_CACHE_LINE_BYTES, STORE);
       }
 
-      /* speculatively enqueue b0 and b1 to the current next frame */
+      /* speculatively enqueue b0-b3 to the current next frame */
       to_next[0] = bi0 = from[0];
       to_next[1] = bi1 = from[1];
-      from += 2;
-      to_next += 2;
-      n_left_from -= 2;
-      n_left_to_next -= 2;
+      to_next[2] = bi2 = from[2];
+      to_next[3] = bi3 = from[3];
+      from += 4;
+      to_next += 4;
+      n_left_from -= 4;
+      n_left_to_next -= 4;
 
       b0 = vlib_get_buffer (vm, bi0);
       b1 = vlib_get_buffer (vm, bi1);
+      b2 = vlib_get_buffer (vm, bi2);
+      b3 = vlib_get_buffer (vm, bi3);
 
       /* do this to always pass on to the next node on feature arc */
       vnet_feature_next (&next0, b0);
       vnet_feature_next (&next1, b1);
+      vnet_feature_next (&next2, b2);
+      vnet_feature_next (&next3, b3);
 
       ASSERT (b0->current_data == 0);
       ASSERT (b1->current_data == 0);
+      ASSERT (b2->current_data == 0);
+      ASSERT (b3->current_data == 0);
           
       en0 = vlib_buffer_get_current (b0);
       en1 = vlib_buffer_get_current (b1);
+      en2 = vlib_buffer_get_current (b2);
+      en3 = vlib_buffer_get_current (b3);
 	  
-      if (b0->flags & VLIB_BUFFER_IS_TRACED) {
+      if (PREDICT_FALSE(b0->flags & VLIB_BUFFER_IS_TRACED)) {
 	sflow_trace_t *t = 
 	  vlib_add_trace (vm, node, b0, sizeof (*t));
 	t->sw_if_index = vnet_buffer(b0)->sw_if_index[VLIB_RX];
@@ -233,7 +251,7 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
 		     sizeof (t->new_dst_mac));
       }
 
-      if (b1->flags & VLIB_BUFFER_IS_TRACED) {
+      if (PREDICT_FALSE(b1->flags & VLIB_BUFFER_IS_TRACED)) {
 	sflow_trace_t *t = 
 	  vlib_add_trace (vm, node, b1, sizeof (*t));
 	t->sw_if_index = vnet_buffer(b1)->sw_if_index[VLIB_RX];
@@ -243,13 +261,36 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
 	clib_memcpy (t->new_dst_mac, en1->dst_address,
 		     sizeof (t->new_dst_mac));
       }
+
+      if (PREDICT_FALSE(b2->flags & VLIB_BUFFER_IS_TRACED)) {
+	sflow_trace_t *t = 
+	  vlib_add_trace (vm, node, b2, sizeof (*t));
+	t->sw_if_index = vnet_buffer(b2)->sw_if_index[VLIB_RX];
+	t->next_index = next2;
+	clib_memcpy (t->new_src_mac, en2->src_address,
+		     sizeof (t->new_src_mac));
+	clib_memcpy (t->new_dst_mac, en2->dst_address,
+		     sizeof (t->new_dst_mac));
+      }
+
+      if (PREDICT_FALSE(b3->flags & VLIB_BUFFER_IS_TRACED)) {
+	sflow_trace_t *t = 
+	  vlib_add_trace (vm, node, b3, sizeof (*t));
+	t->sw_if_index = vnet_buffer(b3)->sw_if_index[VLIB_RX];
+	t->next_index = next3;
+	clib_memcpy (t->new_src_mac, en3->src_address,
+		     sizeof (t->new_src_mac));
+	clib_memcpy (t->new_dst_mac, en3->dst_address,
+		     sizeof (t->new_dst_mac));
+      }
 	  
-      pkts_processed += 2;
+      pkts_processed += 4;
 	  
       /* verify speculative enqueues, maybe switch current next frame */
-      vlib_validate_buffer_enqueue_x2 (vm, node, next_index,
+      vlib_validate_buffer_enqueue_x4 (vm, node, next_index,
 				       to_next, n_left_to_next,
-				       bi0, bi1, next0, next1);
+				       bi0, bi1, bi2, bi3,
+				       next0, next1, next2, next3);
     }
     
     while (n_left_from > 0 && n_left_to_next > 0) {
@@ -283,7 +324,7 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
       // clib_warning("TX ifIndex currently=%u", vnet_buffer(b0)->sw_if_index[VLIB_TX]);
       // vnet_buffer(b0)->sw_if_index[VLIB_TX] = ~0; // sw_if_index0;
 
-      if (b0->flags & VLIB_BUFFER_IS_TRACED) {
+      if (PREDICT_FALSE(b0->flags & VLIB_BUFFER_IS_TRACED)) {
 	sflow_trace_t *t = 
 	  vlib_add_trace (vm, node, b0, sizeof (*t));
 	t->sw_if_index = vnet_buffer(b0)->sw_if_index[VLIB_RX];
