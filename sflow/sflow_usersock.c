@@ -75,7 +75,6 @@ extern "C" {
     //  clib_warning("usersock_open: bind failed: %s\n", strerror(errno));
     setNonBlocking(nl_sock);
     setCloseOnExec(nl_sock);
-    // TODO: join multicast channel? with setsockopt() ?
     return nl_sock;
   }
 

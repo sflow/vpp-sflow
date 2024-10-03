@@ -282,7 +282,6 @@ read_worker_fifos(sflow_main_t *smp) {
     u32 psample_send = 0, psample_send_fail = 0;
     for(u32 thread_index = 0; thread_index < smp->total_threads; thread_index++) {
       sflow_per_thread_data_t *sfwk = vec_elt_at_index(smp->per_thread_data, thread_index);
-      // TODO: dequeue and write multiple samples at a time
       sflow_sample_t sample;
       if(sflow_fifo_dequeue(&sfwk->fifo, &sample)) {
 	if(sample.header_bytes > smp->headerB) {
@@ -529,7 +528,7 @@ int sflow_enable_disable (sflow_main_t * smp, u32 sw_if_index, int enable_disabl
 	    sw->sup_sw_if_index,
 	    sw->hw_if_index);
 #if 0
-  // TODO: do we report MTU with counters sample?
+  // TODO: should we report interface MTU with counters sample?
   for(int ii = 0; ii < VNET_N_MTU; ii++)
     clib_warning("mtu[%u]=%u\n", ii, sw->mtu[ii]);
 #endif
@@ -541,7 +540,6 @@ int sflow_enable_disable (sflow_main_t * smp, u32 sw_if_index, int enable_disabl
   sflow_per_interface_data_t *sfif = vec_elt_at_index(smp->per_interface_data, sw->hw_if_index);
   if(enable_disable == sfif->sflow_enabled) {
     // redundant enable or disable
-    // TODO: decide which error for (a) redundant enable and (b) redundant disable
     return VNET_API_ERROR_VALUE_EXIST;
   }
   else {
@@ -549,7 +547,6 @@ int sflow_enable_disable (sflow_main_t * smp, u32 sw_if_index, int enable_disabl
     sfif->sw_if_index = sw_if_index;
     sfif->hw_if_index = sw->hw_if_index;
     sfif->polled = 0;
-    // TODO: send vapi request to learn sfif->linux_if_index here?
     sfif->sflow_enabled = enable_disable;
     vnet_feature_enable_disable ("device-input", "sflow", sw_if_index, enable_disable, 0, 0);
     smp->interfacesEnabled += (enable_disable) ? 1 : -1;
