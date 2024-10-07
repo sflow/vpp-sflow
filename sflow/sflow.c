@@ -323,13 +323,42 @@ read_worker_fifos(sflow_main_t *smp) {
   }
   return batch;
 }
-  
+
+static void
+read_node_counters(sflow_main_t *smp, sflow_err_ctrs_t *ctrs) {
+  for(u32 ec = 0; ec < SFLOW_N_ERROR; ec++)
+    ctrs->counters[ec] = 0;
+  for(u32 thread_index = 0; thread_index < smp->total_threads; thread_index++) {
+    sflow_per_thread_data_t *sfwk = vec_elt_at_index(smp->per_thread_data, thread_index);
+    ctrs->counters[SFLOW_ERROR_PROCESSED] += sfwk->pool;
+    ctrs->counters[SFLOW_ERROR_SAMPLED] += sfwk->smpl;
+    ctrs->counters[SFLOW_ERROR_DROPPED] += sfwk->drop;
+  }
+}
+
+static void
+update_node_cntr(sflow_main_t *smp, sflow_err_ctrs_t *prev, sflow_err_ctrs_t *latest, sflow_error_t ee) {
+  u32 delta = latest->counters[ee] - prev->counters[ee];
+  vlib_node_increment_counter (smp->vlib_main, sflow_node.index, ee, delta);
+}
+
+static void
+update_node_counters(sflow_main_t *smp, sflow_err_ctrs_t *prev, sflow_err_ctrs_t *latest) {
+  update_node_cntr(smp, prev, latest, SFLOW_ERROR_PROCESSED);
+  update_node_cntr(smp, prev, latest, SFLOW_ERROR_SAMPLED);
+  update_node_cntr(smp, prev, latest, SFLOW_ERROR_DROPPED);
+  *prev = *latest; // latch for next time
+}
+
 static uword
 sflow_process_samples(vlib_main_t *vm, vlib_node_runtime_t *node,
 		  vlib_frame_t *frame) {
   sflow_main_t *smp = &sflow_main;
   clib_time_t ctm;
   clib_time_init(&ctm);
+
+  sflow_err_ctrs_t prev = {};
+  read_node_counters(smp, &prev);
 
   while(1) {
 
@@ -384,6 +413,12 @@ sflow_process_samples(vlib_main_t *vm, vlib_node_runtime_t *node,
     }
     // process samples from workers
     read_worker_fifos(smp);
+
+    // and sync the global counters
+    sflow_err_ctrs_t latest = {};
+    read_node_counters(smp, &latest);
+    update_node_counters(smp, &prev, &latest);
+
   }
   return 0;
 }

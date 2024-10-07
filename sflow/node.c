@@ -80,7 +80,6 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
 {
   u32 n_left_from, * from, * to_next;
   sflow_next_t next_index;
-  u32 pkts_processed = 0, pkts_sampled = 0, pkts_dropped = 0;
 
   sflow_main_t * smp = &sflow_main;
   from = vlib_frame_vector_args (frame);
@@ -90,7 +89,7 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
   sflow_per_thread_data_t *sfwk = vec_elt_at_index(smp->per_thread_data, thread_index);
 
   u32 pkts = n_left_from;
-  if(sfwk->skip >= pkts) {
+  if(PREDICT_TRUE(sfwk->skip >= pkts)) {
     /* skip the whole frame-vector */
     sfwk->skip -= pkts;
     sfwk->pool += pkts;
@@ -136,7 +135,6 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
 	.sampled_packet_size = bN->current_length + bN->total_length_not_including_first_buffer,
 	.header_bytes = hdr
       };
-      pkts_sampled++;
 
       // TODO: we end up copying the header twice here. Consider allowing the
       // enqueue to be just a little more complex.  Like this:
@@ -147,9 +145,10 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
       // because the sflow_sample_t fields are (6xu32) and the headerB setting
       // is quantized to the nearest 32 bytes, so there may be ways to make it
       // even easier for the compiler.)
+      sfwk->smpl++;
       memcpy(sample.header, en, hdr);
-      if(!sflow_fifo_enqueue(&sfwk->fifo, &sample))
-	pkts_dropped++;
+      if (PREDICT_FALSE(!sflow_fifo_enqueue(&sfwk->fifo, &sample)))
+	sfwk->drop++;
       
       pkts -= sfwk->skip;
       sfwk->pool += sfwk->skip;
@@ -284,8 +283,6 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
 		     sizeof (t->new_dst_mac));
       }
 	  
-      pkts_processed += 4;
-	  
       /* verify speculative enqueues, maybe switch current next frame */
       vlib_validate_buffer_enqueue_x4 (vm, node, next_index,
 				       to_next, n_left_to_next,
@@ -335,8 +332,6 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
 		     sizeof (t->new_dst_mac));
       }
 	  
-      pkts_processed += 1;
-	  
       /* verify speculative enqueue, maybe switch current next frame */
       vlib_validate_buffer_enqueue_x1 (vm, node, next_index,
 				       to_next, n_left_to_next,
@@ -344,14 +339,6 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
     }
     
     vlib_put_next_frame (vm, node, next_index, n_left_to_next);
-  }
-  
-  vlib_node_increment_counter (vm, sflow_node.index, SFLOW_ERROR_PROCESSED, pkts_processed);
-  if (pkts_sampled)
-    vlib_node_increment_counter (vm, sflow_node.index, SFLOW_ERROR_SAMPLED, pkts_sampled);
-  if (pkts_dropped) {
-    vlib_node_increment_counter (vm, sflow_node.index, SFLOW_ERROR_DROPPED, pkts_dropped);
-    sfwk->drop += pkts_dropped;
   }
   return frame->n_vectors;
 }

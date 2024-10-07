@@ -72,6 +72,10 @@ typedef enum {
   SFLOW_N_ERROR,
 } sflow_error_t;
 
+typedef struct {
+  u32 counters[SFLOW_N_ERROR];
+} sflow_err_ctrs_t;
+
 /* packet sample */
 typedef struct {
   u32 samplingN;
@@ -123,10 +127,12 @@ typedef struct {
   u32 skip;
   u32 pool;
   u32 seed;
+  u32 smpl;
   u32 drop;
   CLIB_CACHE_LINE_ALIGN_MARK(_fifo);
   sflow_fifo_t fifo;
 } sflow_per_thread_data_t;
+
 
 typedef struct {
   /* API message ID base */
