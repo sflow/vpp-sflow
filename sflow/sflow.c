@@ -75,7 +75,7 @@ update_counter_vector_simple (stat_segment_data_t *res, sflow_counters_t *ifCtrs
 static void
 update_counter_vector_combined(stat_segment_data_t *res, sflow_counters_t *ifCtrs, u32 hw_if_index) {
   for (int th = 0; th < vec_len (res->simple_counter_vec); th++) {
-    for (int intf = 0; intf < vec_len (res->combined_counter_vec[intf]); intf++) {
+    for (int intf = 0; intf < vec_len (res->combined_counter_vec[th]); intf++) {
       if(intf == hw_if_index) {
 	u64 pkts = res->combined_counter_vec[th][intf].packets;
 	u64 byts = res->combined_counter_vec[th][intf].bytes;
