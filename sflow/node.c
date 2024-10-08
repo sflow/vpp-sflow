@@ -84,16 +84,19 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
   uword thread_index = os_get_thread_index();
   sflow_per_thread_data_t *sfwk = vec_elt_at_index(smp->per_thread_data, thread_index);
 
+  /* note that sfwk->skip==1 means "take the next packet",
+     so we never see sfwk->skip==0. */
+
   u32 pkts = n_left_from;
-  if(PREDICT_TRUE(sfwk->skip >= pkts)) {
+  if(PREDICT_TRUE(sfwk->skip > pkts)) {
     /* skip the whole frame-vector */
     sfwk->skip -= pkts;
     sfwk->pool += pkts;
   }
   else {
-    while(pkts > sfwk->skip) {
+    while(pkts >= sfwk->skip) {
       /* reach in to get the one we want. */
-      vlib_buffer_t *bN = vlib_get_buffer (vm, from[sfwk->skip]);
+      vlib_buffer_t *bN = vlib_get_buffer (vm, from[sfwk->skip - 1]);
 
       /* Sample this packet header. */
       u32 hdr = bN->current_length;
@@ -135,14 +138,18 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
       sfwk->pool += sfwk->skip;
       sfwk->skip = sflow_next_random_skip(sfwk);
     }
+    /* We took a sample (or several) from this frame-vector, but now we are
+       skipping the rest. */
+    sfwk->skip -= pkts;
+    sfwk->pool += pkts;
   }
 
   /* the rest of this is boilerplate code just to make sure
    * that packets are passed on the same way as they would
    * have been if this node were not enabled.
-   *
-   * Not sure at all if this is right.
-   * There has got to be an easier way?
+   * TODO: If there is ever a way to do this in one step
+   * (i.e. pass on the whole frame-vector unchanged) then it
+   * might help performance.
    */
   
   next_index = node->cached_next_index;

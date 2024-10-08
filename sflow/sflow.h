@@ -171,9 +171,12 @@ extern sflow_main_t sflow_main;
 extern vlib_node_registration_t sflow_node;
 
 static inline u32 sflow_next_random_skip(sflow_per_thread_data_t *sfwk) {
+  /* skip==1 means "take the next packet" so this
+     fn must never return 0 */
   if(sfwk->smpN <= 1)
     return 1;
-  return (random_u32(&sfwk->seed) % (2 * sfwk->smpN) - 1) + 1;
+  u32 lim = (2 * sfwk->smpN) - 1;
+  return (random_u32(&sfwk->seed) % lim) + 1;
 }
 
 #endif /* __included_sflow_h__ */
