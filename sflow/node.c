@@ -19,10 +19,6 @@
 #include <vppinfra/error.h>
 #include <sflow/sflow.h>
 
-// different logging options
-//#define SFLOW_LOG_CYCLES 1
-//#define SFLOW_LOG_SAMPLES 1
-
 typedef struct 
 {
   u32 next_index;
@@ -96,9 +92,6 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
   }
   else {
     while(pkts > sfwk->skip) {
-#ifdef SFLOW_LOG_CYCLES
-      u64 cycles1 = clib_cpu_time_now();
-#endif
       /* reach in to get the one we want. */
       vlib_buffer_t *bN = vlib_get_buffer (vm, from[sfwk->skip]);
 
@@ -116,19 +109,7 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
 	// TODO: can we get interfaces that have no hw interface?
 	// If so,  should we ignore the sample?
       }
-      
-#ifdef SFLOW_LOG_SAMPLES
-      clib_warning("sflow take sample if_index=%u len=%u en->src_address=%02x:%02x:%02x:%02x:%02x:%02x",
-      		   if_index,
-		   bN->current_length,
-      		   en->src_address[0],
-      		   en->src_address[1],
-      		   en->src_address[2],
-      		   en->src_address[3],
-      		   en->src_address[4],
-      		   en->src_address[5]);
-#endif
-      
+
       sflow_sample_t sample = {
 	.samplingN = sfwk->smpN,
 	.input_if_index = if_index,
@@ -153,13 +134,6 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
       pkts -= sfwk->skip;
       sfwk->pool += sfwk->skip;
       sfwk->skip = sflow_next_random_skip(sfwk);
-      
-#ifdef SFLOW_LOG_CYCLES
-      uint64_t cycles2 = clib_cpu_time_now();
-      // clib_warning("sample cycles = %u", (cycles2 - cycles1));
-      vlib_node_increment_counter (vm, sflow_node.index, SFLOW_ERROR_CYCLES, (cycles2-cycles1));
-#endif
-      
     }
   }
 

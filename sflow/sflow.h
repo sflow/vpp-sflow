@@ -61,7 +61,6 @@
   _ (PROCESSED, "sflow packets processed") \
   _ (SAMPLED, "sflow packets sampled") \
   _ (DROPPED, "sflow packets dropped") \
-  _ (CYCLES, "CPU cycles in sent samples") \
   _ (PSAMPLE_SEND, "sflow PSAMPLE sent") \
   _ (PSAMPLE_SEND_FAIL, "sflow PSAMPLE send failed")
 
