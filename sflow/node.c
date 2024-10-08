@@ -120,6 +120,11 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
 	.header_bytes = hdr
       };
 
+      // TODO: what bit in the buffer can we set right here to indicate
+      // that this packet was sampled (and perhaps another bit to say if it
+      // was dropped or sucessfully enqueued)? That way we can check it
+      // below if the packet is traced, and indicate that in the trace output.
+
       // TODO: we end up copying the header twice here. Consider allowing the
       // enqueue to be just a little more complex.  Like this:
       // if(!sflow_fifo_enqueue(&sfwk->fifo, &sample, en, hdr).
@@ -298,7 +303,7 @@ VLIB_NODE_FN (sflow_node) (vlib_main_t * vm,
           
       en0 = vlib_buffer_get_current (b0);
 
-      // Are we supposed to tweak this buffer metadata?
+      // TODO: Are we supposed to tweak this buffer metadata?
       // clib_warning("TX ifIndex currently=%u", vnet_buffer(b0)->sw_if_index[VLIB_TX]);
       // vnet_buffer(b0)->sw_if_index[VLIB_TX] = ~0; // sw_if_index0;
 
