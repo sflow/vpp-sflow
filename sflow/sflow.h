@@ -34,23 +34,9 @@
 #define SFLOW_HEADER_BYTES_STEP 32
 
 #define SFLOW_USE_VAPI
-// #define SFLOW_TEST_HAMMER_VAPI
-
-//#define SFLOW_TEST_SHORT_FIFO 1
-#ifdef SFLOW_TEST_SHORT_FIFO
-#define SFLOW_FIFO_DEPTH 4 // must be power of 2
-#else
 #define SFLOW_FIFO_DEPTH 2048 // must be power of 2
-#endif
-
-//#define SFLOW_TEST_SLOW_POLL 1
-#ifdef SFLOW_TEST_SLOW_POLL
-#define SFLOW_POLL_WAIT_S 1
-#define SFLOW_READ_BATCH 1
-#else
 #define SFLOW_POLL_WAIT_S 0.001
 #define SFLOW_READ_BATCH 100
-#endif
 
 // use PSAMPLE group number to distinguish VPP samples from others
 // (so that hsflowd will know to remap the ifIndex numbers if necessary)
