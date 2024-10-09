@@ -18,13 +18,14 @@
 #define SFLOW_USE_VAPI
 
 extern vlib_log_class_t sflow_logger;
-#define SFLOW_DBG(...) vlib_log_debug (sflow_logger, __VA_ARGS__);
-#define SFLOW_INFO(...) vlib_log_info (sflow_logger, __VA_ARGS__);
+#define SFLOW_DBG(...)	  vlib_log_debug (sflow_logger, __VA_ARGS__);
+#define SFLOW_INFO(...)	  vlib_log_info (sflow_logger, __VA_ARGS__);
 #define SFLOW_NOTICE(...) vlib_log_notice (sflow_logger, __VA_ARGS__);
-#define SFLOW_WARN(...) vlib_log_warn (sflow_logger, __VA_ARGS__);
-#define SFLOW_ERR(...) vlib_log_err (sflow_logger, __VA_ARGS__);
+#define SFLOW_WARN(...)	  vlib_log_warn (sflow_logger, __VA_ARGS__);
+#define SFLOW_ERR(...)	  vlib_log_err (sflow_logger, __VA_ARGS__);
 
-typedef struct {
+typedef struct
+{
   u32 sw_if_index;
   u32 hw_if_index;
   u32 linux_if_index;
@@ -41,4 +42,3 @@ typedef struct {
  * eval: (c-set-style "gnu")
  * End:
  */
-
