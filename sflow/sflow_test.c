@@ -41,14 +41,14 @@ api_sflow_enable_disable (vat_main_t *vam)
 {
   unformat_input_t *i = vam->input;
   int enable_disable = 1;
-  u32 sw_if_index = ~0;
+  u32 hw_if_index = ~0;
   vl_api_sflow_enable_disable_t *mp;
   int ret;
 
   /* Parse args required to build the message */
   while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
     {
-      if (unformat (i, "%U", unformat_sw_if_index, vam, &sw_if_index))
+      if (unformat (i, "%U", unformat_sw_if_index, vam, &hw_if_index))
 	;
       else if (unformat (i, "disable"))
 	enable_disable = 0;
@@ -56,15 +56,15 @@ api_sflow_enable_disable (vat_main_t *vam)
 	break;
     }
 
-  if (sw_if_index == ~0)
+  if (hw_if_index == ~0)
     {
-      errmsg ("missing interface name / explicit sw_if_index number \n");
+      errmsg ("missing interface name / explicit hw_if_index number \n");
       return -99;
     }
 
   /* Construct the API message */
   M (SFLOW_ENABLE_DISABLE, mp);
-  mp->sw_if_index = ntohl (sw_if_index);
+  mp->hw_if_index = ntohl (hw_if_index);
   mp->enable_disable = enable_disable;
 
   /* send it... */
@@ -75,12 +75,38 @@ api_sflow_enable_disable (vat_main_t *vam)
   return ret;
 }
 
+static void
+vl_api_sflow_sampling_rate_get_reply_t_handler (
+  vl_api_sflow_sampling_rate_get_reply_t *mp)
+{
+  vat_main_t *vam = sflow_test_main.vat_main;
+  clib_warning ("sflow sampling_N: %d", ntohl (mp->sampling_N));
+  vam->result_ready = 1;
+}
+
 static int
-api_sflow_sampling_rate (vat_main_t *vam)
+api_sflow_sampling_rate_get (vat_main_t *vam)
+{
+  vl_api_sflow_sampling_rate_get_t *mp;
+  int ret;
+
+  /* Construct the API message */
+  M (SFLOW_SAMPLING_RATE_GET, mp);
+
+  /* send it... */
+  S (mp);
+
+  /* Wait for a reply... */
+  W (ret);
+  return ret;
+}
+
+static int
+api_sflow_sampling_rate_set (vat_main_t *vam)
 {
   unformat_input_t *i = vam->input;
   u32 sampling_N = ~0;
-  vl_api_sflow_sampling_rate_t *mp;
+  vl_api_sflow_sampling_rate_set_t *mp;
   int ret;
 
   /* Parse args required to build the message */
@@ -99,7 +125,7 @@ api_sflow_sampling_rate (vat_main_t *vam)
     }
 
   /* Construct the API message */
-  M (SFLOW_SAMPLING_RATE, mp);
+  M (SFLOW_SAMPLING_RATE_SET, mp);
   mp->sampling_N = ntohl (sampling_N);
 
   /* send it... */
@@ -110,12 +136,38 @@ api_sflow_sampling_rate (vat_main_t *vam)
   return ret;
 }
 
+static void
+vl_api_sflow_polling_interval_get_reply_t_handler (
+  vl_api_sflow_polling_interval_get_reply_t *mp)
+{
+  vat_main_t *vam = sflow_test_main.vat_main;
+  clib_warning ("sflow polling-interval: %d", ntohl (mp->polling_S));
+  vam->result_ready = 1;
+}
+
 static int
-api_sflow_polling_interval (vat_main_t *vam)
+api_sflow_polling_interval_get (vat_main_t *vam)
+{
+  vl_api_sflow_polling_interval_get_t *mp;
+  int ret;
+
+  /* Construct the API message */
+  M (SFLOW_POLLING_INTERVAL_GET, mp);
+
+  /* send it... */
+  S (mp);
+
+  /* Wait for a reply... */
+  W (ret);
+  return ret;
+}
+
+static int
+api_sflow_polling_interval_set (vat_main_t *vam)
 {
   unformat_input_t *i = vam->input;
   u32 polling_S = ~0;
-  vl_api_sflow_polling_interval_t *mp;
+  vl_api_sflow_polling_interval_set_t *mp;
   int ret;
 
   /* Parse args required to build the message */
@@ -134,7 +186,7 @@ api_sflow_polling_interval (vat_main_t *vam)
     }
 
   /* Construct the API message */
-  M (SFLOW_POLLING_INTERVAL, mp);
+  M (SFLOW_POLLING_INTERVAL_SET, mp);
   mp->polling_S = ntohl (polling_S);
 
   /* send it... */
@@ -145,12 +197,38 @@ api_sflow_polling_interval (vat_main_t *vam)
   return ret;
 }
 
+static void
+vl_api_sflow_header_bytes_get_reply_t_handler (
+  vl_api_sflow_header_bytes_get_reply_t *mp)
+{
+  vat_main_t *vam = sflow_test_main.vat_main;
+  clib_warning ("sflow header-bytes: %d", ntohl (mp->header_B));
+  vam->result_ready = 1;
+}
+
 static int
-api_sflow_header_bytes (vat_main_t *vam)
+api_sflow_header_bytes_get (vat_main_t *vam)
+{
+  vl_api_sflow_header_bytes_get_t *mp;
+  int ret;
+
+  /* Construct the API message */
+  M (SFLOW_HEADER_BYTES_GET, mp);
+
+  /* send it... */
+  S (mp);
+
+  /* Wait for a reply... */
+  W (ret);
+  return ret;
+}
+
+static int
+api_sflow_header_bytes_set (vat_main_t *vam)
 {
   unformat_input_t *i = vam->input;
   u32 header_B = ~0;
-  vl_api_sflow_header_bytes_t *mp;
+  vl_api_sflow_header_bytes_set_t *mp;
   int ret;
 
   /* Parse args required to build the message */
@@ -169,8 +247,33 @@ api_sflow_header_bytes (vat_main_t *vam)
     }
 
   /* Construct the API message */
-  M (SFLOW_HEADER_BYTES, mp);
+  M (SFLOW_HEADER_BYTES_SET, mp);
   mp->header_B = ntohl (header_B);
+
+  /* send it... */
+  S (mp);
+
+  /* Wait for a reply... */
+  W (ret);
+  return ret;
+}
+
+static void
+vl_api_sflow_interface_details_t_handler (vl_api_sflow_interface_details_t *mp)
+{
+  vat_main_t *vam = sflow_test_main.vat_main;
+  clib_warning ("sflow enable: %d", ntohl (mp->hw_if_index));
+  vam->result_ready = 1;
+}
+
+static int
+api_sflow_interface_dump (vat_main_t *vam)
+{
+  vl_api_sflow_interface_dump_t *mp;
+  int ret;
+
+  /* Construct the API message */
+  M (SFLOW_INTERFACE_DUMP, mp);
 
   /* send it... */
   S (mp);

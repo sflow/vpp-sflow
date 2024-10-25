@@ -905,46 +905,121 @@ vl_api_sflow_enable_disable_t_handler (vl_api_sflow_enable_disable_t *mp)
   sflow_main_t *smp = &sflow_main;
   int rv;
 
-  rv = sflow_enable_disable (smp, ntohl (mp->sw_if_index),
+  rv = sflow_enable_disable (smp, ntohl (mp->hw_if_index),
 			     (int) (mp->enable_disable));
 
   REPLY_MACRO (VL_API_SFLOW_ENABLE_DISABLE_REPLY);
 }
 
 static void
-vl_api_sflow_sampling_rate_t_handler (vl_api_sflow_sampling_rate_t *mp)
+vl_api_sflow_sampling_rate_set_t_handler (vl_api_sflow_sampling_rate_set_t *mp)
 {
-  vl_api_sflow_sampling_rate_reply_t *rmp;
+  vl_api_sflow_sampling_rate_set_reply_t *rmp;
   sflow_main_t *smp = &sflow_main;
   int rv;
 
   rv = sflow_sampling_rate (smp, ntohl (mp->sampling_N));
 
-  REPLY_MACRO (VL_API_SFLOW_SAMPLING_RATE_REPLY);
+  REPLY_MACRO (VL_API_SFLOW_SAMPLING_RATE_SET_REPLY);
 }
 
 static void
-vl_api_sflow_polling_interval_t_handler (vl_api_sflow_polling_interval_t *mp)
+vl_api_sflow_sampling_rate_get_t_handler (vl_api_sflow_sampling_rate_get_t *mp)
 {
-  vl_api_sflow_polling_interval_reply_t *rmp;
+  vl_api_sflow_sampling_rate_get_reply_t *rmp;
+  sflow_main_t *smp = &sflow_main;
+
+  REPLY_MACRO_DETAILS2 (VL_API_SFLOW_SAMPLING_RATE_GET_REPLY,
+			({ rmp->sampling_N = ntohl (smp->samplingN); }));
+}
+
+static void
+vl_api_sflow_polling_interval_set_t_handler (
+  vl_api_sflow_polling_interval_set_t *mp)
+{
+  vl_api_sflow_polling_interval_set_reply_t *rmp;
   sflow_main_t *smp = &sflow_main;
   int rv;
 
   rv = sflow_polling_interval (smp, ntohl (mp->polling_S));
 
-  REPLY_MACRO (VL_API_SFLOW_POLLING_INTERVAL_REPLY);
+  REPLY_MACRO (VL_API_SFLOW_POLLING_INTERVAL_SET_REPLY);
 }
 
 static void
-vl_api_sflow_header_bytes_t_handler (vl_api_sflow_header_bytes_t *mp)
+vl_api_sflow_polling_interval_get_t_handler (
+  vl_api_sflow_polling_interval_get_t *mp)
 {
-  vl_api_sflow_header_bytes_reply_t *rmp;
+  vl_api_sflow_polling_interval_get_reply_t *rmp;
+  sflow_main_t *smp = &sflow_main;
+
+  REPLY_MACRO_DETAILS2 (VL_API_SFLOW_POLLING_INTERVAL_GET_REPLY,
+			({ rmp->polling_S = ntohl (smp->pollingS); }));
+}
+
+static void
+vl_api_sflow_header_bytes_set_t_handler (vl_api_sflow_header_bytes_set_t *mp)
+{
+  vl_api_sflow_header_bytes_set_reply_t *rmp;
   sflow_main_t *smp = &sflow_main;
   int rv;
 
   rv = sflow_header_bytes (smp, ntohl (mp->header_B));
 
-  REPLY_MACRO (VL_API_SFLOW_HEADER_BYTES_REPLY);
+  REPLY_MACRO (VL_API_SFLOW_HEADER_BYTES_SET_REPLY);
+}
+
+static void
+vl_api_sflow_header_bytes_get_t_handler (vl_api_sflow_header_bytes_get_t *mp)
+{
+  vl_api_sflow_header_bytes_get_reply_t *rmp;
+  sflow_main_t *smp = &sflow_main;
+
+  REPLY_MACRO_DETAILS2 (VL_API_SFLOW_HEADER_BYTES_GET_REPLY,
+			({ rmp->header_B = ntohl (smp->headerB); }));
+}
+
+static void
+send_sflow_interface_details (vpe_api_main_t *am, vl_api_registration_t *reg,
+			      u32 context, const u32 hw_if_index)
+{
+  vl_api_sflow_interface_details_t *mp;
+  sflow_main_t *smp = &sflow_main;
+
+  mp = vl_msg_api_alloc_zero (sizeof (*mp));
+  mp->_vl_msg_id = ntohs (REPLY_MSG_ID_BASE + VL_API_SFLOW_INTERFACE_DETAILS);
+  mp->context = context;
+
+  mp->hw_if_index = htonl (hw_if_index);
+  vl_api_send_msg (reg, (u8 *) mp);
+}
+
+static void
+vl_api_sflow_interface_dump_t_handler (vl_api_sflow_interface_dump_t *mp)
+{
+  vpe_api_main_t *am = &vpe_api_main;
+  sflow_main_t *smp = &sflow_main;
+  vl_api_registration_t *reg;
+  u32 hw_if_index = ~0;
+
+  reg = vl_api_client_index_to_registration (mp->client_index);
+  if (!reg)
+    return;
+  hw_if_index = ntohl (mp->hw_if_index);
+
+  for (int ii = 0; ii < vec_len (smp->per_interface_data); ii++)
+    {
+      sflow_per_interface_data_t *sfif =
+	vec_elt_at_index (smp->per_interface_data, ii);
+      if (sfif && sfif->sflow_enabled)
+	{
+	  if (hw_if_index == ~0 || hw_if_index == sfif->hw_if_index)
+	    {
+	      send_sflow_interface_details (am, reg, mp->context,
+					    sfif->hw_if_index);
+	    }
+	}
+    }
 }
 
 /* API definitions */
