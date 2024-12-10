@@ -139,12 +139,11 @@ extern "C"
 
   static int
   generic_send (int sockfd, u32 mod_id, int type, int cmd, int req_type,
-		void *req, int req_len, u32 seqNo)
+		void *req, int req_len, int req_footprint, u32 seqNo)
   {
     struct nlmsghdr nlh = {};
     struct genlmsghdr ge = {};
     struct nlattr attr = {};
-    int req_footprint = NLMSG_ALIGN (req_len);
 
     attr.nla_len = sizeof (attr) + req_len;
     attr.nla_type = req_type;
@@ -180,9 +179,13 @@ extern "C"
   getFamily_PSAMPLE (SFLOWPS *pst)
   {
     // clib_warning("getFamily\n");
+#define SFLOWPS_FAM_LEN sizeof(PSAMPLE_GENL_NAME)
+#define SFLOWPS_FAM_FOOTPRINT NLMSG_ALIGN(SFLOWPS_FAM_LEN)
+    char fam_name[SFLOWPS_FAM_FOOTPRINT] = {};
+    memcpy (fam_name, PSAMPLE_GENL_NAME, SFLOWPS_FAM_LEN);
     generic_send (pst->nl_sock, pst->id, GENL_ID_CTRL, CTRL_CMD_GETFAMILY,
-		  CTRL_ATTR_FAMILY_NAME, PSAMPLE_GENL_NAME,
-		  sizeof (PSAMPLE_GENL_NAME) + 1, ++pst->nl_seq);
+		  CTRL_ATTR_FAMILY_NAME, fam_name,
+		  SFLOWPS_FAM_LEN, SFLOWPS_FAM_FOOTPRINT, ++pst->nl_seq);
     pst->state = SFLOWPS_STATE_WAIT_FAMILY;
   }
 
