@@ -129,7 +129,7 @@ startsWith (u8 *str, char *prefix)
 {
   if (str && prefix)
     {
-      int len1 = strlen ((char *) str);
+      int len1 = vec_len (str);
       int len2 = strlen (prefix);
       if (len1 >= len2)
 	{
@@ -190,7 +190,7 @@ retry:
   SFLOWUSSpec spec = {};
   SFLOWUSSpec_setMsgType (&spec, SFLOW_VPP_MSG_IF_COUNTERS);
   SFLOWUSSpec_setAttr (&spec, SFLOW_VPP_ATTR_PORTNAME, hw->name,
-		       strlen ((char *) hw->name));
+		       vec_len (hw->name));
   SFLOWUSSpec_setAttrInt (&spec, SFLOW_VPP_ATTR_IFINDEX, sfif->hw_if_index);
   if (sfif->linux_if_index)
     {
