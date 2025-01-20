@@ -77,3 +77,35 @@ sflow sampling-rate 500
 ```
 
 
+# Python API
+
+An example that shows how to manipulate the sFlow plugin programmtically in Python:
+
+```python
+from vpp_papi import VPPApiClient, VPPApiJSONFiles
+import sys
+
+vpp_api_dir = VPPApiJSONFiles.find_api_dir([])
+vpp_api_files = VPPApiJSONFiles.find_api_files(api_dir=vpp_api_dir)
+vpp = VPPApiClient(apifiles=vpp_api_files, server_address="/run/vpp/api.sock")
+vpp.connect("sflow-api-client")
+print(vpp.api.show_version())
+
+print(vpp.api.sflow_sampling_rate_set(sampling_N=10000))
+print(vpp.api.sflow_sampling_rate_get())
+print(vpp.api.sflow_polling_interval_set(polling_S=30))
+print(vpp.api.sflow_polling_interval_get())
+print(vpp.api.sflow_header_bytes_set(header_B=96))
+print(vpp.api.sflow_header_bytes_get())
+
+print(vpp.api.sflow_enable_disable(hw_if_index=1, enable_disable=True))
+print(vpp.api.sflow_enable_disable(hw_if_index=2, enable_disable=True))
+print(vpp.api.sflow_interface_dump())                 # Both interfaces
+print(vpp.api.sflow_interface_dump(hw_if_index=2))    # Single interface
+print(vpp.api.sflow_interface_dump(hw_if_index=1234)) # Non-existent
+
+print(vpp.api.sflow_enable_disable(hw_if_index=1, enable_disable=False))
+print(vpp.api.sflow_interface_dump())                 # Only interface 2
+print(vpp.api.sflow_enable_disable(hw_if_index=2, enable_disable=False))
+print(vpp.api.sflow_interface_dump())                 # No interfaces
+```
