@@ -77,11 +77,6 @@ extern "C"
 	SFLOW_ERR ("nl_sock open failed: %s\n", strerror (errno));
 	return -1;
       }
-    // bind does not seem necessary (for sender)
-    // bind to a suitable id
-    // struct sockaddr_nl sa = { .nl_family = AF_NETLINK, .nl_pid = getpid() };
-    // if(bind(nl_sock, (struct sockaddr *)&sa, sizeof(sa)) < 0)
-    //  clib_warning("usersock_open: bind failed: %s\n", strerror(errno));
     setNonBlocking (nl_sock);
     setCloseOnExec (nl_sock);
     return nl_sock;
@@ -212,7 +207,6 @@ extern "C"
 			  .msg_iovlen = frag };
 
     int status = sendmsg (ust->nl_sock, &msg, 0);
-    // clib_warning("sendmsg returned %d\n", status);
     if (status <= 0)
       {
 	// Linux replies with ECONNREFUSED when

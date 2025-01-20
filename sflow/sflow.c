@@ -62,8 +62,6 @@ update_counter_vector_simple (stat_segment_data_t *res,
 	      u64 count = res->simple_counter_vec[th][intf];
 	      if (count)
 		{
-		  // clib_warning("%s{thread=\"%d\",interface=\"%d\"} %lld\n",
-		  // res->name, th, intf, count);
 		  if (strcmp (res->name, "/if/rx-error") == 0)
 		    ifCtrs->rx.errs += count;
 		  else if (strcmp (res->name, "/if/tx-error") == 0)
@@ -94,10 +92,6 @@ update_counter_vector_combined (stat_segment_data_t *res,
 	      u64 byts = res->combined_counter_vec[th][intf].bytes;
 	      if (pkts || byts)
 		{
-		  // clib_warning("%s_packets{thread=\"%d\",interface=\"%d\"}
-		  // %lld\n", res->name, th, intf, pkts);
-		  // clib_warning("%s_bytes{thread=\"%d\",interface=\"%d\"}
-		  // %lld\n", res->name, th, intf, byts);
 		  if (strcmp (res->name, "/if/rx") == 0)
 		    {
 		      ifCtrs->rx.pkts += pkts;
@@ -164,10 +158,6 @@ retry:
   // and accumulate the (per-thread) entries for this interface
   for (int ii = 0; ii < vec_len (res); ii++)
     {
-      /* if(strstr(res[ii].name, "lcp") */
-      /*    || strstr(res[ii].name, "tap")) */
-      /*   clib_warning("res name = %s type=%d\n", res[ii].name, res[ii].type);
-       */
       switch (res[ii].type)
 	{
 	case STAT_DIR_TYPE_COUNTER_VECTOR_SIMPLE:
@@ -333,10 +323,9 @@ read_worker_fifos (sflow_main_t *smp)
 	    {
 	      if (sample.header_bytes > smp->headerB)
 		{
-		  // Get here if header-bytes setting is reduced dynamically
+		  // We get here if header-bytes setting is reduced dynamically
 		  // and a sample that was in the FIFO appears with a larger
-		  // header. clib_warning("sample.header_bytes too big: %u\n",
-		  // sample.header_bytes);
+		  // header.
 		  continue;
 		}
 	      SFLOWPSSpec spec = {};
@@ -365,8 +354,6 @@ read_worker_fifos (sflow_main_t *smp)
 		psample_send_fail++;
 	    }
 	}
-      // clib_warning("process_samples: sent=%u failed=%u\n", psample_send,
-      // psample_send_fail);
       if (psample_send == 0)
 	{
 	  // nothing found on FIFOs this time through, so terminate batch early
@@ -460,7 +447,6 @@ sflow_process_samples (vlib_main_t *vm, vlib_node_runtime_t *node,
       EnumSFLOWPSState psState = SFLOWPS_state (&smp->sflow_psample);
       if (psState != SFLOWPS_STATE_READY)
 	{
-	  // clib_warning("PSAMPLE state = %u\n", psState);
 	  SFLOWPS_open_step (&smp->sflow_psample);
 	}
 
@@ -563,8 +549,6 @@ sflow_sampling_start (sflow_main_t *smp)
   smp->sflow_usersock.group_id = SFLOW_NETLINK_USERSOCK_MULTICAST;
   /* set up (or reset) sampling context for each thread */
   sflow_set_worker_sampling_state (smp);
-
-  // clib_warning("sflow_sampling_start done");
 }
 
 static void
@@ -574,7 +558,6 @@ sflow_sampling_stop (sflow_main_t *smp)
   smp->running = 0;
   SFLOWPS_close (&smp->sflow_psample);
   SFLOWUS_close (&smp->sflow_usersock);
-  // clib_warning("sflow_sampling_stop_done");
 }
 
 static void
@@ -657,11 +640,6 @@ sflow_enable_disable (sflow_main_t *smp, u32 sw_if_index, int enable_disable)
   // he_if_index_by_sw_if_index.
   SFLOW_DBG ("sw_if_index=%u, sup_sw_if_index=%u, hw_if_index=%u\n",
 	     sw->sw_if_index, sw->sup_sw_if_index, sw->hw_if_index);
-#if 0
-  // TODO: should we report interface MTU with counters sample?
-  for(int ii = 0; ii < VNET_N_MTU; ii++)
-    clib_warning("mtu[%u]=%u\n", ii, sw->mtu[ii]);
-#endif
 
   // note: vnet_hw_interface_t has uword *bond_info
   // (where 0=>none, ~0 => slave, other=>ptr to bitmap of slaves)

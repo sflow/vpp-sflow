@@ -74,7 +74,6 @@ extern "C"
       {
 	SFLOW_ERR ("getsockopt(SO_SNDBUF) failed: %s", strerror (errno));
       }
-    // clib_warning("socket buffer current=%d", txbuf);
     if (txbuf < requested)
       {
 	txbuf = requested;
@@ -89,8 +88,6 @@ extern "C"
 	  {
 	    SFLOW_ERR ("getsockopt(SO_SNDBUF) failed: %s", strerror (errno));
 	  }
-	// clib_warning("socket buffer requested=%d received=%d", requested,
-	// txbuf);
       }
     return txbuf;
   }
@@ -178,14 +175,13 @@ extern "C"
   static void
   getFamily_PSAMPLE (SFLOWPS *pst)
   {
-    // clib_warning("getFamily\n");
-#define SFLOWPS_FAM_LEN sizeof(PSAMPLE_GENL_NAME)
-#define SFLOWPS_FAM_FOOTPRINT NLMSG_ALIGN(SFLOWPS_FAM_LEN)
+#define SFLOWPS_FAM_LEN	      sizeof (PSAMPLE_GENL_NAME)
+#define SFLOWPS_FAM_FOOTPRINT NLMSG_ALIGN (SFLOWPS_FAM_LEN)
     char fam_name[SFLOWPS_FAM_FOOTPRINT] = {};
     memcpy (fam_name, PSAMPLE_GENL_NAME, SFLOWPS_FAM_LEN);
     generic_send (pst->nl_sock, pst->id, GENL_ID_CTRL, CTRL_CMD_GETFAMILY,
-		  CTRL_ATTR_FAMILY_NAME, fam_name,
-		  SFLOWPS_FAM_LEN, SFLOWPS_FAM_FOOTPRINT, ++pst->nl_seq);
+		  CTRL_ATTR_FAMILY_NAME, fam_name, SFLOWPS_FAM_LEN,
+		  SFLOWPS_FAM_FOOTPRINT, ++pst->nl_seq);
     pst->state = SFLOWPS_STATE_WAIT_FAMILY;
   }
 
@@ -462,14 +458,6 @@ extern "C"
     spec->n_attrs++;
     spec->attrs_len += sizeof (psa->attr);
     spec->attrs_len += len_w_pad;
-#if 0
-    clib_warning("SFLOWPSSpec_setAttr(%s) len=%u, len_w_pad=%u, iov_len=%u, nattrs=%u\n",
-		 SFLOWPS_Fields[field].descr,
-		 len,
-		 len_w_pad,
-		 psa->val.iov_len,
-		 spec->n_attrs);
-#endif
     return true;
   }
 

@@ -310,11 +310,6 @@ VLIB_NODE_FN (sflow_node)
 
 	  en0 = vlib_buffer_get_current (b0);
 
-	  // TODO: Are we supposed to tweak this buffer metadata?
-	  // clib_warning("TX ifIndex currently=%u",
-	  // vnet_buffer(b0)->sw_if_index[VLIB_TX]);
-	  // vnet_buffer(b0)->sw_if_index[VLIB_TX] = ~0; // sw_if_index0;
-
 	  if (PREDICT_FALSE (b0->flags & VLIB_BUFFER_IS_TRACED))
 	    {
 	      sflow_trace_t *t = vlib_add_trace (vm, node, b0, sizeof (*t));
