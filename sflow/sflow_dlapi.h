@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 InMon Corp.
+ * Copyright (c) 2025 InMon Corp.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at:
@@ -12,26 +12,20 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef __included_sflow_common_h__
-#define __included_sflow_common_h__
+#ifndef __included_sflow_dlapi_h__
+#define __included_sflow_dlapi_h__
 
-extern vlib_log_class_t sflow_logger;
-#define SFLOW_DBG(...)	  vlib_log_debug (sflow_logger, __VA_ARGS__);
-#define SFLOW_INFO(...)	  vlib_log_info (sflow_logger, __VA_ARGS__);
-#define SFLOW_NOTICE(...) vlib_log_notice (sflow_logger, __VA_ARGS__);
-#define SFLOW_WARN(...)	  vlib_log_warn (sflow_logger, __VA_ARGS__);
-#define SFLOW_ERR(...)	  vlib_log_err (sflow_logger, __VA_ARGS__);
+/* Dynamic-link API
+ * If present, linux-cp plugin will be queried to learn the
+ * Linux if_index for each VPP if_index. If that plugin is not
+ * compiled and loaded, or if the function symbol is not found,
+ * then the interfaces will be reported to NETLINK_USERSOCK
+ * without this extra mapping.
+ */
+#define SFLOW_LCP_LIB "linux_cp_plugin.so"
+#define SFLOW_LCP_SYM_GET_VIF_BY_PHY "lcp_ift_pair_get_vif_index_by_phy"
 
-typedef struct
-{
-  u32 sw_if_index;
-  u32 hw_if_index;
-  u32 linux_if_index;
-  u32 polled;
-  int sflow_enabled;
-} sflow_per_interface_data_t;
-
-#endif /* __included_sflow_common_h__ */
+#endif /* __included_sflow_dyn_api_h__ */
 
 /*
  * fd.io coding-style-patch-verification: ON
