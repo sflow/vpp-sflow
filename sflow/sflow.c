@@ -24,8 +24,8 @@
 
 #include <sflow/sflow.api_enum.h>
 #include <sflow/sflow.api_types.h>
-#include <sflow/sflow_psample.h>
 #include <sflow/sflow_dlapi.h>
+#include <sflow/sflow_psample.h>
 
 #include <vpp-api/client/stat_client.h>
 #include <vlib/stats/stats.h>
@@ -184,21 +184,20 @@ retry:
 		       vec_len (hw->name));
   SFLOWUSSpec_setAttrInt (&spec, SFLOW_VPP_ATTR_IFINDEX, sfif->hw_if_index);
 
-  if(!smp->lcp_dlapi_tested)
-    {
-      void *fn = vlib_get_plugin_symbol (SFLOW_LCP_LIB, SFLOW_LCP_SYM_GET_VIF_BY_PHY);
-      if(fn != NULL)
-	{
-	  smp->lcp_itf_pair_get_vif_index_by_phy = fn;
-	  smp->lcp_dlapi_available = true;
-	}
-      smp->lcp_dlapi_tested = true;
+  if (!smp->lcp_dlapi_tested) {
+    void *fn =
+        vlib_get_plugin_symbol(SFLOW_LCP_LIB, SFLOW_LCP_SYM_GET_VIF_BY_PHY);
+    if (fn != NULL) {
+      smp->lcp_itf_pair_get_vif_index_by_phy = fn;
+      smp->lcp_dlapi_available = true;
     }
-  if(smp->lcp_dlapi_available)
-    {
-      sfif->linux_if_index = (*smp->lcp_itf_pair_get_vif_index_by_phy)(sfif->hw_if_index);
-    }
-  
+    smp->lcp_dlapi_tested = true;
+  }
+  if (smp->lcp_dlapi_available) {
+    sfif->linux_if_index =
+        (*smp->lcp_itf_pair_get_vif_index_by_phy)(sfif->hw_if_index);
+  }
+
   if (sfif->linux_if_index)
     {
       // We know the corresponding Linux ifIndex for this interface, so include
@@ -465,8 +464,8 @@ sflow_process_samples (vlib_main_t *vm, vlib_node_runtime_t *node,
       if (tnow_S != smp->now_mono_S)
 	{
 	  // second rollover
-	  smp->now_mono_S = tnow_S;
-	  // send status info
+          smp->now_mono_S = tnow_S;
+          // send status info
 	  send_sampling_status_info (smp);
 	  // poll counters for interfaces that are due
 	  counter_polling_check (smp);
