@@ -22,7 +22,6 @@
 #include <vppinfra/hash.h>
 #include <vppinfra/error.h>
 #include <sflow/sflow_common.h>
-#include <sflow/sflow_vapi.h>
 #include <sflow/sflow_psample.h>
 #include <sflow/sflow_usersock.h>
 
@@ -124,7 +123,7 @@ typedef struct
   sflow_fifo_t fifo;
 } sflow_per_thread_data_t;
 
-typedef u32 (*IfIndexLookupFn)(u32);
+typedef u32 (*IfIndexLookupFn) (u32);
 
 typedef struct
 {
