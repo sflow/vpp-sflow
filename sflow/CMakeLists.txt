@@ -12,7 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-include_directories(${CMAKE_SOURCE_DIR}/vpp-api ${CMAKE_CURRENT_BINARY_DIR}/../../vpp-api)
+if ("${CMAKE_SYSTEM_NAME}" STREQUAL "FreeBSD")
+  message(WARNING "sflow is not supported on FreeBSD - sflow plugin disabled")
+  return()
+endif()
 
 add_vpp_plugin(sflow
   SOURCES
