@@ -182,26 +182,15 @@ retry:
   SFLOWUSSpec_setMsgType (&spec, SFLOW_VPP_MSG_IF_COUNTERS);
   SFLOWUSSpec_setAttr (&spec, SFLOW_VPP_ATTR_PORTNAME, hw->name,
 		       vec_len (hw->name));
-  SFLOWUSSpec_setAttrInt (&spec, SFLOW_VPP_ATTR_IFINDEX, sfif->hw_if_index);
+  SFLOWUSSpec_setAttrInt (&spec, SFLOW_VPP_ATTR_IFINDEX, sfif->sw_if_index);
 
-  if (!smp->lcp_dlapi_tested)
-    {
-      void *fn =
-	vlib_get_plugin_symbol (SFLOW_LCP_LIB, SFLOW_LCP_SYM_GET_VIF_BY_PHY);
-      if (fn != NULL)
-	{
-	  smp->lcp_itf_pair_get_vif_index_by_phy = fn;
-	  smp->lcp_dlapi_available = true;
-	}
-      smp->lcp_dlapi_tested = true;
-    }
-  if (smp->lcp_dlapi_available)
+  if (smp->lcp_itf_pair_get_vif_index_by_phy)
     {
       sfif->linux_if_index =
-	(*smp->lcp_itf_pair_get_vif_index_by_phy) (sfif->hw_if_index);
+	(*smp->lcp_itf_pair_get_vif_index_by_phy) (sfif->sw_if_index);
     }
 
-  if (sfif->linux_if_index)
+  if (sfif->linux_if_index != INDEX_INVALID)
     {
       // We know the corresponding Linux ifIndex for this interface, so include
       // that here.
@@ -1015,6 +1004,18 @@ sflow_init (vlib_main_t *vm)
 
   /* access to counters - TODO: should this only happen on sflow enable? */
   sflow_stat_segment_client_init ();
+
+  smp->lcp_itf_pair_get_vif_index_by_phy =
+    vlib_get_plugin_symbol (SFLOW_LCP_LIB, SFLOW_LCP_SYM_GET_VIF_BY_PHY);
+  if (smp->lcp_itf_pair_get_vif_index_by_phy)
+    {
+      SFLOW_NOTICE ("linux-cp found - using LIP vif_index, where available");
+    }
+  else
+    {
+      SFLOW_NOTICE ("linux-cp not found - using VPP sw_if_index");
+    }
+
   return error;
 }
 

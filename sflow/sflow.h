@@ -165,8 +165,6 @@ typedef struct
   u32 csample_send;
   u32 csample_send_drops;
   u32 unixsock_seq;
-  int lcp_dlapi_tested;
-  int lcp_dlapi_available;
   IfIndexLookupFn lcp_itf_pair_get_vif_index_by_phy;
 } sflow_main_t;
 
