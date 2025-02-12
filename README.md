@@ -55,6 +55,14 @@ sflow {
 }
 
 ```
+You can add multiple collectors. If one is only reachable in another namespace you can use:
+```
+  collector { ip=172.16.1.1 namespace=mgmt }
+```
+Or in a VRF represented by a Linux netdev:
+```
+  collector { ip=192.168.100.2 dev=mgmt0 }
+```
 For more details on hsflowd.conf features and config, see https://sflow.net/host-sflow-linux-config.php
 
 # Confirm sFlow output
