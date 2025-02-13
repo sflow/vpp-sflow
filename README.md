@@ -67,7 +67,11 @@ Or in a VRF represented by a Linux netdev:
 For more details on hsflowd.conf features and config, see https://sflow.net/host-sflow-linux-config.php
 
 # Confirm sFlow output
-The sflowtool utility can asciify the sFlow feed in various ways. The build steps are...
+The sflowtool utility can asciify the sFlow feed in various ways. If you have docker you can invoke:
+```
+docker run sflow/sflowtool
+```
+OR, to build and run sflowtool from sources the steps are:
 ```
 cd $SRC && git clone https://github.com/sflow/sflowtool
 cd $SRC/sflowtool
@@ -78,11 +82,11 @@ sudo make install
 sflowtool
 ```
 
-When significant traffic enters the VPP interfaces that were configured for sFlow, you should see packet-samples printed by sflowtool.
+To start with you may only see counter-samples for each interface and for the host as a whole, but when significant traffic enters the VPP interfaces that were configured for sFlow then you should also see packet-samples printed by sflowtool.
 
-You can adjust the sampling-rate dynamically at any time at the vpp CLI:
+You can adjust the sampling-rate dynamically at any time at the vpp CLI (if you are just running 'ping' then you can set it to 1):
 ```
-sflow sampling-rate 500
+sflow sampling-rate 100
 ```
 
 
