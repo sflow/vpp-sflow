@@ -11,9 +11,10 @@ cd $SRC/vpp && make rebuild
 ```
 
 # Load Kernel Module
-It is necesary for the "psample" kernel module to be loaded:
+It is necesary for the "psample" kernel module to be loaded (both now and on reboot):
 ```
 sudo modprobe psample
+sudo sh -c 'echo "psample" > /etc/modules-load.d/sflow.conf'
 ```
 
 # Logging
