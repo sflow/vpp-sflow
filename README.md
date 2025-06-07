@@ -29,6 +29,8 @@ logging {
 ```
 vppctl sflow sampling-rate 10000
 vppctl sflow polling-interval 20
+vppctl sflow direction both
+vppctl sflow drop-monitoring enable
 vppctl sflow enable GigabitEthernet0/8/0
 vppctl sflow enable GigabitEthernet0/9/0
 vppctl sflow enable GigabitEthernet0/a/0
